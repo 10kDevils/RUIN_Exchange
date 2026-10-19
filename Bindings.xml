@@ -1,0 +1,5 @@
+<Bindings>
+	<Binding name="RUIN_EXCHANGE_OPEN" header="RUIN_EXCHANGE" category="ADDONS">
+		RUIN_Exchange_Open()
+	</Binding>
+</Bindings>
