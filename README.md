@@ -2,10 +2,10 @@
 
 RUIN's shared market knowledge: auction prices with a 7-day trend, a directory of who can craft what, the cheapest way to level your profession, a craft request board, and a bag sweep.
 
-Part of the RUIN addon suite. Requires **RUIN Core** (0.3.0 or later). With **RUIN Codex** installed, the bag sweep keeps items that are upgrades for you.
+Part of the **RUIN Gaming Companion App**. Requires **RUIN Core** (0.3.0 or later). With **RUIN Codex** installed, the bag sweep keeps items that are upgrades for you.
 
 ## The experience
-- **Where it lives:** the Exchange page in the RUIN window (Search, Requests, Leveling, Bags), item tooltips, and `/ex`.
+- **Where it lives:** the Exchange tab in the RUIN window (Search, Requests, Leveling, Bags), item tooltips, and `/ex`.
 - **Prices:** browse the auction house as usual; prices you saw are shared when you close it. Tooltips show the RUIN price, the 7-day average with its trend, and whether to sell or vendor.
 - **Crafters:** opening a profession window shares your recipes. Search for an item or recipe to see who in RUIN can make it, and whisper them.
 - **Leveling:** opening a profession also ranks your orange, yellow and green recipes by expected cost per skill point from RUIN prices. Hover one for its reagents.

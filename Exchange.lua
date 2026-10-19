@@ -8,13 +8,13 @@
 local ADDON, ns = ...
 local R = RUIN_API
 if not R or (R.apiLevel or 1) < 3 then
-    print("|cffc41e3aRUIN|r Exchange needs a newer RUIN Core (0.3.0 or later).")
+    print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.0 or later).")
     return
 end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.3.0" })
+local M = R:RegisterModule("Exchange", { version = "0.3.1" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
