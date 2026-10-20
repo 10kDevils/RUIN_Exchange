@@ -6,6 +6,12 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.3.4 — 2026-10-19
+
+1 change since 0.3.3 (needs RUIN Core 0.3.12):
+
+1. **Clearer pages, in Exchange's color.** Search's mode reads *Find: Crafters* or *Find: Prices*, and the search, request and note boxes show what to type in them.
+
 ## 0.3.3 — 2026-10-19
 
 1 change since 0.3.2:

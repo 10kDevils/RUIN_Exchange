@@ -7,14 +7,14 @@
 -- a bag sweep labels every item keep, sell or vendor.
 local ADDON, ns = ...
 local R = RUIN_API
-if not R or (R.apiLevel or 1) < 3 then
-    print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.0 or later).")
+if not R or (R.apiLevel or 1) < 6 then
+    print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.12 or later).")
     return
 end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.3.3" })
+local M = R:RegisterModule("Exchange", { version = "0.3.4" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -499,10 +499,11 @@ local function search()
 end
 
 local function buildSearch(page)
-    local mode = W.Cycle(page, 110, { "Crafters", "Prices" }, function() return ui.mode end,
-        function(v) ui.mode = v; refreshPage() end)
+    local mode = W.Cycle(page, 150, { "Crafters", "Prices" }, function() return ui.mode end,
+        function(v) ui.mode = v; ui.searchBox:SetPlaceholder(v == "Crafters" and "Item or recipe, e.g. Flask" or "Item name, e.g. Linen Cloth"); refreshPage() end, "Find: ")
+    mode.tipTitle = "Search who can craft something, or what it sells for"
     mode:SetPoint("TOPLEFT", 0, -2)
-    local box = W.EditBox(page, 250, function(t) ui.query = t; refreshPage() end)
+    local box = W.EditBox(page, 250, function(t) ui.query = t; refreshPage() end, "Item or recipe, e.g. Flask")
     box:SetPoint("LEFT", mode, "RIGHT", 12, 0)
     box:SetScript("OnTextChanged", function(self, user) if user then ui.query = self:GetText(); refreshPage() end end)
     ui.searchBox = box
@@ -535,15 +536,13 @@ local function buildRequests(page)
     local card = W.Card(page)
     card:SetPoint("TOPLEFT", 0, 0)
     card:SetPoint("RIGHT", page, "RIGHT", -4, 0)
-    card:SetHeight(56)
+    card:SetHeight(60)
     local h = W.Header(card, "Ask RUIN to craft something")
     h:SetPoint("TOPLEFT", 8, -6)
-    ui.reqItem = W.EditBox(card, 220)
-    ui.reqItem:SetPoint("TOPLEFT", 12, -26)
-    local nl = W.Label(card, C.dim .. "note|r", "GameFontHighlightSmall")
-    nl:SetPoint("LEFT", ui.reqItem, "RIGHT", 8, 0)
-    local note = W.EditBox(card, 200)
-    note:SetPoint("LEFT", nl, "RIGHT", 6, 0)
+    ui.reqItem = W.EditBox(card, 240, nil, "Item to craft (shift-click or type)")
+    ui.reqItem:SetPoint("TOPLEFT", 10, -28)
+    local note = W.EditBox(card, 220, nil, "Note, e.g. I bring the mats")
+    note:SetPoint("LEFT", ui.reqItem, "RIGHT", 8, 0)
     local post = W.Button(card, "Post", 64, function()
         M:Request(ui.reqItem:GetText(), note:GetText())
         ui.reqItem:SetText(""); note:SetText("")
@@ -551,7 +550,7 @@ local function buildRequests(page)
     post:SetPoint("LEFT", note, "RIGHT", 8, 0)
 
     local h2 = W.Header(page, "Open requests")
-    h2:SetPoint("TOPLEFT", 0, -66)
+    h2:SetPoint("TOPLEFT", 0, -72)
     local sub = W.Label(page, C.dim .. "Crafters who know the recipe get an alert. Requests close after a day.|r", "GameFontHighlightSmall")
     sub:SetPoint("LEFT", h2, "RIGHT", 10, 0)
     ui.reqList = W.List(page, 28, function(row)
@@ -597,6 +596,7 @@ local function buildLeveling(page)
         ui.prof = names[idx % #names + 1]
         refreshPage()
     end)
+    W.MarkChoice(ui.profPick)
     ui.profPick:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 2)
     ui.levelInfo = W.Label(page, "", "GameFontHighlightSmall")
     ui.levelInfo:SetPoint("TOPLEFT", 0, -22)
