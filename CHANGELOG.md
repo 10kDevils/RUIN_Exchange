@@ -6,6 +6,12 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.3.2 — 2026-10-19
+
+1 change since 0.3.1:
+
+1. **New display name** (Market tab, Market page), to match the RUIN Gaming Companion App brief and RUIN Core 0.3.10's new tab order. The addon list shows it as "Market (Exchange)". The tabs now read in the brief's plain language. Only what players see changed: the addon folder, repository, command and saved-data names stay the same, so nothing needs reinstalling or re-setting.
+
 ## 0.3.1 — 2026-10-18
 
 1 change since 0.3.0:

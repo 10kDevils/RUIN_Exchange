@@ -1,8 +1,8 @@
 ## Interface: 16001, 120105
-## Title: |cffe6b862RUIN|r Exchange
+## Title: |cffe6b862RUIN|r Market (Exchange)
 ## Notes: Auction prices shared across RUIN, a "who can craft it" directory, and sell-or-vendor advice on tooltips.
 ## Author: RUIN
-## Version: 0.3.1
+## Version: 0.3.2
 ## Dependencies: RUIN_Core
 ## SavedVariables: RUIN_ExchangeDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
