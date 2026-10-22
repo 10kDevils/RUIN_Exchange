@@ -7,14 +7,14 @@
 -- a bag sweep labels every item keep, sell or vendor.
 local ADDON, ns = ...
 local R = RUIN_API
-if not R or (R.apiLevel or 1) < 6 then
-    print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.12 or later).")
+if not R or (R.apiLevel or 1) < 9 then
+    print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.16 or later).")
     return
 end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.3.4" })
+local M = R:RegisterModule("Exchange", { version = "0.3.5" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -27,7 +27,7 @@ local CLASSIC_DIFFICULTY = { optimal = 0, medium = 1, easy = 2, trivial = 3 }
 
 local db
 local session = {}       -- itemID -> lowest unit price seen during this AH visit
-local ui = { mode = "Crafters", query = "" }
+local ui = { mode = "Crafters", query = "", prof = "All professions" }
 local refreshPage = function() end
 
 local function dayKey(t) return math.floor((t or GetServerTime()) / 86400) end
@@ -192,8 +192,30 @@ local function planLeveling(prof, skill, maxSkill, recipes)
     db.plans[prof] = { skill = skill, max = maxSkill, list = list, t = GetServerTime() }
 end
 
+-- The item a recipe makes: id and quality from its link (nil for enchants).
+local function madeItem(link)
+    if type(link) ~= "string" then return nil end
+    local id = tonumber(link:match("item:(%d+)"))
+    if not id then return nil end
+    R.Items.RememberLinks(link)
+    local _, _, q = R.Items.Info(id)
+    return id, q
+end
+
+local function recipeLinkModern(recipeID)
+    if C_TradeSkillUI.GetRecipeItemLink then
+        local ok, link = pcall(C_TradeSkillUI.GetRecipeItemLink, recipeID)
+        if ok and link then return link end
+    end
+    if C_TradeSkillUI.GetRecipeOutputItemData then
+        local ok, out = pcall(C_TradeSkillUI.GetRecipeOutputItemData, recipeID)
+        if ok and type(out) == "table" then return out.hyperlink end
+    end
+end
+
 local function scanCrafts()
     local prof, list, recipes, skill, maxSkill = nil, {}, {}, nil, nil
+    local made = {}            -- recipe name -> { id, quality }
     if C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
         local info = C_TradeSkillUI.GetBaseProfessionInfo and C_TradeSkillUI.GetBaseProfessionInfo()
         prof = info and info.professionName
@@ -202,6 +224,8 @@ local function scanCrafts()
             local r = C_TradeSkillUI.GetRecipeInfo(id)
             if r and r.learned and r.name then
                 list[#list + 1] = r.name
+                local iid, q = madeItem(recipeLinkModern(id))
+                if iid then made[r.name] = { iid, q } end
                 if r.relativeDifficulty and r.relativeDifficulty < 3 then
                     recipes[#recipes + 1] = { name = r.name, diff = r.relativeDifficulty, reagents = reagentsModern(id) }
                 end
@@ -215,6 +239,8 @@ local function scanCrafts()
             local name, kind = GetTradeSkillInfo(i)
             if name and kind ~= "header" then
                 list[#list + 1] = name
+                local iid, q = madeItem(GetTradeSkillItemLink and GetTradeSkillItemLink(i))
+                if iid then made[name] = { iid, q } end
                 local diff = CLASSIC_DIFFICULTY[kind]
                 if diff and diff < 3 then recipes[#recipes + 1] = { name = name, diff = diff, reagents = reagentsClassic(i) } end
             end
@@ -224,14 +250,24 @@ local function scanCrafts()
     planLeveling(prof, skill, maxSkill, recipes)
     table.sort(list)
     local me = R:GetPlayer()
-    db.crafters[me.guid] = db.crafters[me.guid] or { name = me.name, guild = me.guild, profs = {} }
-    db.crafters[me.guid].profs[prof] = list
-    db.crafters[me.guid].t = GetServerTime()
+    -- the made item's id and quality travel beside the names (i, q), so
+    -- older RUIN versions still read the list of names
+    local ids, qs = {}, {}
+    for n, name in ipairs(list) do
+        local m = made[name]
+        ids[n], qs[n] = m and m[1] or 0, m and m[2] or -1
+    end
+    local e = db.crafters[me.guid] or { name = me.name, guild = me.guild, profs = {} }
+    e.profs[prof] = list
+    e.made = e.made or {}
+    e.made[prof] = { i = ids, q = qs }
+    e.t = GetServerTime()
+    db.crafters[me.guid] = e
     refreshPage()
     local sig = #list .. ":" .. table.concat(list, "|"):len()
     if lastCraftSig[prof] == sig then return end
     lastCraftSig[prof] = sig
-    M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list }, "ORG", nil, R.PRIORITY.BULK)
+    M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = ids, q = qs }, "ORG", nil, R.PRIORITY.BULK)
     M:Print(("Shared %d %s recipes with RUIN."):format(#list, prof))
 end
 
@@ -250,6 +286,15 @@ function M:OnCrafts(d, sender)
     local e = db.crafters[d.g] or { profs = {} }
     e.name, e.guild, e.t = sender, d.gu, GetServerTime()
     e.profs[d.p] = d.l
+    if type(d.i) == "table" then
+        local ids, qs = {}, {}
+        for n = 1, #d.l do
+            ids[n] = tonumber(d.i[n]) or 0
+            qs[n] = type(d.q) == "table" and tonumber(d.q[n]) or -1
+        end
+        e.made = e.made or {}
+        e.made[d.p] = { i = ids, q = qs }
+    end
     db.crafters[d.g] = e
 end
 
@@ -469,23 +514,49 @@ local function search()
     local q = ui.query:lower()
     local items = {}
     if ui.mode == "Crafters" then
+        -- by profession, then recipe, then crafter; each row shows the item's quality
+        local byProf = {}
         for _, e in pairs(db.crafters) do
             for prof, list in pairs(e.profs or {}) do
-                for _, recipe in ipairs(list) do
-                    if q == "" or recipe:lower():find(q, 1, true) then
-                        items[#items + 1] = { text = ("%s%s|r  %s  %s(%s, %s)|r"):format(C.white, recipe,
-                            W.ClassName(e.name), C.dim, prof, e.guild or "?"), who = e.name }
-                        if #items >= 200 then return items end
+                if ui.prof == "All professions" or ui.prof == prof then
+                    local made = e.made and e.made[prof]
+                    for n, recipe in ipairs(list) do
+                        if q == "" or recipe:lower():find(q, 1, true) then
+                            local iid = made and tonumber(made.i[n]) or 0
+                            local quality = made and tonumber(made.q[n]) or -1
+                            byProf[prof] = byProf[prof] or {}
+                            table.insert(byProf[prof], { recipe = recipe, who = e.name, guild = e.guild,
+                                id = iid > 0 and iid or nil, quality = quality >= 0 and quality or nil })
+                        end
                     end
                 end
             end
         end
-        table.sort(items, function(a, b) return a.text < b.text end)
+        local profs = {}
+        for prof in pairs(byProf) do profs[#profs + 1] = prof end
+        table.sort(profs)
+        for _, prof in ipairs(profs) do
+            local rows = byProf[prof]
+            table.sort(rows, function(a, b)
+                if a.recipe ~= b.recipe then return a.recipe < b.recipe end
+                return tostring(a.who) < tostring(b.who)
+            end)
+            items[#items + 1] = { header = prof, count = #rows }
+            for _, r in ipairs(rows) do
+                if #items >= 300 then return items end
+                local _, link, iq = nil, nil, nil
+                if r.id then _, link, iq = R.Items.Info(r.id) end
+                r.quality = r.quality or iq
+                r.link = link
+                items[#items + 1] = r
+            end
+        end
+        return items
     else
         local now = GetServerTime()
         for id, p in pairs(db.prices) do
-            local name, link = itemInfo(id)
-            local label = link or name or ("item #" .. id)
+            local name, link = R.Items.Info(id)
+            local label = R.Items.Text(id)
             if q == "" or (name and name:lower():find(q, 1, true)) then
                 local _, pct = M:Trend(id)
                 items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r"):format(label, C.gold, W.Money(p.p), trendText(pct), C.dim,
@@ -500,35 +571,78 @@ end
 
 local function buildSearch(page)
     local mode = W.Cycle(page, 150, { "Crafters", "Prices" }, function() return ui.mode end,
-        function(v) ui.mode = v; ui.searchBox:SetPlaceholder(v == "Crafters" and "Item or recipe, e.g. Flask" or "Item name, e.g. Linen Cloth"); refreshPage() end, "Find: ")
+        function(v) ui.mode = v; ui.searchBox:SetPlaceholder(v == "Crafters" and "Recipe, e.g. Flask" or "Item name, e.g. Linen Cloth"); refreshPage() end, "Find: ")
     mode.tipTitle = "Search who can craft something, or what it sells for"
     mode:SetPoint("TOPLEFT", 0, -2)
-    local box = W.EditBox(page, 250, function(t) ui.query = t; refreshPage() end, "Item or recipe, e.g. Flask")
+    local box = W.EditBox(page, 210, function(t) ui.query = t; refreshPage() end, "Recipe, e.g. Flask")
     box:SetPoint("LEFT", mode, "RIGHT", 12, 0)
     box:SetScript("OnTextChanged", function(self, user) if user then ui.query = self:GetText(); refreshPage() end end)
     ui.searchBox = box
+    ui.profBtn = W.Dropdown(page, 170, function()
+        local set, list = {}, { "All professions" }
+        for _, e in pairs(db.crafters) do for prof in pairs(e.profs or {}) do set[prof] = true end end
+        local names = {}
+        for prof in pairs(set) do names[#names + 1] = prof end
+        table.sort(names)
+        for _, n in ipairs(names) do list[#list + 1] = n end
+        return list
+    end, function() return ui.prof end, function(v) ui.prof = v; refreshPage() end)
+    ui.profBtn.tipTitle = "Show one profession"
+    ui.profBtn:SetPoint("LEFT", box, "RIGHT", 8, 0)
     local tip = W.Check(page, "Tooltip prices", function() return db.tooltip end, function(v) db.tooltip = v end)
-    tip:SetPoint("LEFT", box, "RIGHT", 12, 0)
+    tip:SetPoint("TOPRIGHT", page, "TOPRIGHT", -96, 0)
 
     ui.summary = W.Label(page, "", "GameFontHighlightSmall")
     ui.summary:SetPoint("TOPLEFT", 0, -30)
     ui.summary:SetPoint("RIGHT", page, "RIGHT", -6, 0)
+    -- column heads for the crafter list
+    ui.heads = CreateFrame("Frame", nil, page)
+    ui.heads:SetPoint("TOPLEFT", 0, -46)
+    ui.heads:SetPoint("RIGHT", page, "RIGHT", -24, 0)
+    ui.heads:SetHeight(14)
+    for _, h in ipairs({ { "Profession / recipe", 4 }, { "Crafter", 330 }, { "Quality", 536 } }) do
+        local fs = W.Label(ui.heads, h[1], "GameFontHighlightSmall")
+        fs:SetTextColor(W.PALETTE.sub[1], W.PALETTE.sub[2], W.PALETTE.sub[3])
+        fs:SetPoint("LEFT", h[2], 0)
+    end
 
     ui.list = W.List(page, 24, function(row)
         row.text = W.Label(row, "")
         row.text:SetPoint("LEFT", 4, 0)
         row.text:SetPoint("RIGHT", row, "RIGHT", -74, 0)
         row.text:SetWordWrap(false)
+        row.crafter = W.Label(row, "")
+        row.crafter:SetPoint("LEFT", 330, 0)
+        row.crafter:SetWidth(200)
+        row.crafter:SetWordWrap(false)
+        row.quality = W.Label(row, "", "GameFontHighlightSmall")
+        row.quality:SetPoint("LEFT", 536, 0)
+        row.quality:SetWidth(90)
+        row.quality:SetWordWrap(false)
         row.btn = W.Button(row, "Whisper", 70)
         row.btn:SetPoint("RIGHT", 0, 0)
     end, function(row, item)
-        row.text:SetText(item.text)
-        row.link = item.link
         row.btn:SetShown(item.who ~= nil)
         row.btn:SetScript("OnClick", function() if item.who then whisper(item.who) end end)
+        row.link = item.link
+        if item.header then                        -- a profession heading
+            row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
+            row.text:SetText(C.gold .. item.header .. "|r  " .. C.dim .. item.count .. (item.count == 1 and " recipe" or " recipes") .. "|r")
+            row.crafter:SetText(""); row.quality:SetText("")
+        elseif item.recipe then                    -- recipe, crafter, quality
+            row.text:SetPoint("RIGHT", row, "LEFT", 324, 0)
+            row.text:SetText("   " .. (item.id and R.Items.Text(item.id, item.recipe, item.quality) or (C.white .. item.recipe .. "|r")))
+            row.crafter:SetText(W.ClassName(item.who) .. C.dim .. ((item.guild and item.guild ~= "") and ("  " .. item.guild) or "") .. "|r")
+            row.quality:SetText(item.quality and (R.Items.QualityHex(item.quality) .. R.Items.QualityName(item.quality) .. "|r")
+                or (C.dim .. (item.id and "?" or "no item") .. "|r"))
+        else                                       -- a price line
+            row.text:SetPoint("RIGHT", row, "RIGHT", -74, 0)
+            row.text:SetText(item.text)
+            row.crafter:SetText(""); row.quality:SetText("")
+        end
     end)
     ui.list:SetEmptyText("Nothing found. Prices arrive as RUIN members browse the auction house; recipes as they open a profession.")
-    ui.list.frame:SetPoint("TOPLEFT", 0, -48)
+    ui.list.frame:SetPoint("TOPLEFT", 0, -62)
     ui.list.frame:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -24, 0)
 end
 
@@ -614,9 +728,8 @@ local function buildLeveling(page)
             tip:AddLine(r.name, 1, 0.82, 0)
             tip:AddLine(("One craft: %s from RUIN prices"):format(W.Money(r.cost)), 1, 1, 1)
             for _, rg in ipairs(r.reagents or {}) do
-                local name = itemInfo(rg[1])
                 local p = price(rg[1])
-                tip:AddLine(("%d x %s  %s"):format(rg[2], name or ("item #" .. rg[1]), p and W.Money(p * rg[2]) or "no price"), 0.8, 0.8, 0.8)
+                tip:AddLine(("%d x %s  %s"):format(rg[2], R.Items.Text(rg[1]), p and W.Money(p * rg[2]) or "no price"), 0.8, 0.8, 0.8)
             end
         end
     end)
@@ -674,6 +787,9 @@ local function buildPage(panel)
             for _ in pairs(db.crafters) do crafters = crafters + 1 end
             ui.summary:SetText(("%s%d prices known (newest %s) · %d crafters listed. Browse the auction house or open a profession to add yours.|r")
                 :format(C.dim, prices, newest > 0 and W.Ago(GetServerTime() - newest) or "never", crafters))
+            ui.profBtn:SetShown(ui.mode == "Crafters")
+            ui.heads:SetShown(ui.mode == "Crafters")
+            ui.profBtn:Refresh()
             ui.list:SetItems(search())
         elseif tab == 2 then
             ui.reqList:SetItems(reqs)
@@ -724,6 +840,7 @@ function M:OnEnable()
     self:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", onBrowse)
     self:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_ADDED", onBrowse)
     self:RegisterEvent("AUCTION_HOUSE_CLOSED", shareSession)
+    R:Subscribe("ITEMS_LOADED", function() refreshPage() end)
     self:RegisterEvent("TRADE_SKILL_SHOW", scheduleCraftScan)
     self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", scheduleCraftScan)
     self:RegisterEvent("BAG_UPDATE_DELAYED", function() if ui.swept and ui.tabs and ui.tabs.selected == 4 then refreshPage() end end)

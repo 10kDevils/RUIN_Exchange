@@ -6,6 +6,12 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.3.5 — 2026-10-22
+
+1 change since 0.3.4 (needs RUIN Core 0.3.16):
+
+1. **Crafters by profession, crafter and quality.** Searching for crafters lists each profession, then its recipes with the item they make (in its quality color), the RUIN member who can craft it, and the item's quality; pick one profession from the new list beside the search box. Opening a profession window now also shares the item each recipe makes and its quality (older RUIN versions still read the recipe names). Prices and reagents show item names instead of "item #1234".
+
 ## 0.3.4 — 2026-10-19
 
 1 change since 0.3.3 (needs RUIN Core 0.3.12):
