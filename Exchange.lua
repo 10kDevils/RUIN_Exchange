@@ -14,7 +14,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.3.5" })
+local M = R:RegisterModule("Exchange", { version = "0.3.6" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -213,10 +213,35 @@ local function recipeLinkModern(recipeID)
     end
 end
 
+-- Set when RUIN's own Scan button opened the window: close it after the scan.
+local closeAfterScan = 0
+local craftWindow = false   -- the classic Craft window (Enchanting) is open
+
+local function closeScannedWindow()
+    if GetTime() - closeAfterScan > 20 then return end
+    closeAfterScan = 0
+    if C_TradeSkillUI and C_TradeSkillUI.CloseTradeSkill then pcall(C_TradeSkillUI.CloseTradeSkill)
+    elseif CloseTradeSkill then pcall(CloseTradeSkill) end
+    if CloseCraft then pcall(CloseCraft) end
+end
+
 local function scanCrafts()
     local prof, list, recipes, skill, maxSkill = nil, {}, {}, nil, nil
     local made = {}            -- recipe name -> { id, quality }
-    if C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
+    if craftWindow and GetNumCrafts and GetCraftInfo then
+        -- classic clients show Enchanting in a separate Craft window
+        local rank, maxRank
+        prof, rank, maxRank = GetCraftDisplaySkillLine and GetCraftDisplaySkillLine()
+        skill, maxSkill = rank, maxRank
+        for i = 1, GetNumCrafts() or 0 do
+            local name, _, kind = GetCraftInfo(i)
+            if name and kind ~= "header" then
+                list[#list + 1] = name
+                local iid, q = madeItem(GetCraftItemLink and GetCraftItemLink(i))
+                if iid then made[name] = { iid, q } end
+            end
+        end
+    elseif C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
         local info = C_TradeSkillUI.GetBaseProfessionInfo and C_TradeSkillUI.GetBaseProfessionInfo()
         prof = info and info.professionName
         skill, maxSkill = info and info.skillLevel, info and info.maxSkillLevel
@@ -247,7 +272,8 @@ local function scanCrafts()
         end
     end
     if not prof or prof == "" or #list == 0 then return end
-    planLeveling(prof, skill, maxSkill, recipes)
+    closeScannedWindow()
+    if #recipes > 0 then planLeveling(prof, skill, maxSkill, recipes) end
     table.sort(list)
     local me = R:GetPlayer()
     -- the made item's id and quality travel beside the names (i, q), so
@@ -261,9 +287,12 @@ local function scanCrafts()
     e.profs[prof] = list
     e.made = e.made or {}
     e.made[prof] = { i = ids, q = qs }
+    e.skill = e.skill or {}
+    e.skill[prof] = tonumber(skill)
     e.t = GetServerTime()
     db.crafters[me.guid] = e
     refreshPage()
+    if M.RefreshScanPrompt then M.RefreshScanPrompt() end
     local sig = #list .. ":" .. table.concat(list, "|"):len()
     if lastCraftSig[prof] == sig then return end
     lastCraftSig[prof] = sig
@@ -279,6 +308,170 @@ local function scheduleCraftScan()
         craftScanPending = false
         scanCrafts()
     end)
+end
+
+---------------------------------------------------------------------------
+-- Your professions at login. The game lists a profession's recipes only
+-- while its window is open, so at login Exchange checks which professions
+-- you have (and their skill), shares the recipes it already knows, and asks
+-- you to open any profession that is new or has gone up since its last scan
+-- (one click each in the "Add your recipes" window).
+---------------------------------------------------------------------------
+local NO_WINDOW = { Herbalism = true, Skinning = true, Fishing = true, Archaeology = true }
+local OPEN_SPELL = { Mining = "Smelting" }   -- the spell that opens a profession's window
+
+-- { { name, skill, max } } for your crafting professions, or nil if the client can't tell.
+function M.Professions()
+    local out = {}
+    if GetProfessions and GetProfessionInfo then
+        local list = { GetProfessions() }
+        for i = 1, 6 do
+            local idx = list[i]
+            if idx then
+                local name, _, rank, maxRank = GetProfessionInfo(idx)
+                if name and not NO_WINDOW[name] then out[#out + 1] = { name = name, skill = rank, max = maxRank } end
+            end
+        end
+        return out
+    end
+    if GetNumSkillLines and GetSkillLineInfo then
+        local section
+        local profHeaders = { [TRADE_SKILLS or "Professions"] = true, ["Professions"] = true,
+                              [(SECONDARY_SKILLS or "Secondary Skills"):gsub(":$", "")] = true, ["Secondary Skills"] = true }
+        for i = 1, GetNumSkillLines() or 0 do
+            local name, header, _, rank, _, _, maxRank = GetSkillLineInfo(i)
+            if header then section = name
+            elseif name and section and profHeaders[section] and not NO_WINDOW[name] then
+                out[#out + 1] = { name = name, skill = rank, max = maxRank }
+            end
+        end
+        return out
+    end
+    return nil
+end
+
+-- Professions whose recipes Exchange should (re)read: never scanned, or skill went up.
+function M.NeedsScan()
+    local profs = M.Professions()
+    if not profs then return {} end
+    local me = db and db.crafters[R:GetPlayerGUID() or ""]
+    local out = {}
+    for _, p in ipairs(profs) do
+        local known = me and me.profs and me.profs[p.name]
+        local was = me and me.skill and me.skill[p.name]
+        if not known or #known == 0 or (tonumber(p.skill) and tonumber(was) and p.skill > was) then out[#out + 1] = p end
+    end
+    return out
+end
+
+-- Share the recipes you already have on record (each profession once per session,
+-- and again when someone asks). Professions you no longer have are dropped.
+local sharedAt = -999
+function M.ShareMine(force)
+    if not R:IsConnected() then return end
+    if not force and GetTime() - sharedAt < 600 then return end
+    if GetTime() - sharedAt < 60 then return end
+    local me = R:GetPlayer()
+    local e = db.crafters[me.guid]
+    if not e or not e.profs then return end
+    local profs = M.Professions()
+    if profs then
+        local have = {}
+        for _, p in ipairs(profs) do have[p.name] = true end
+        for prof in pairs(e.profs) do
+            -- the craft window's name can differ (Mining's window is Smelting); keep those
+            local alias = (prof == "Smelting" and have.Mining) or (prof == "Mining" and have.Mining)
+            if not have[prof] and not alias and next(have) then
+                e.profs[prof] = nil
+                if e.made then e.made[prof] = nil end
+                M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = {} }, "ORG", nil, R.PRIORITY.BULK)
+            end
+        end
+    end
+    sharedAt = GetTime()
+    for prof, list in pairs(e.profs) do
+        local m = e.made and e.made[prof]
+        M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q }, "ORG", nil, R.PRIORITY.BULK)
+    end
+end
+
+-- The small "Add your recipes" window: one button per profession that opens
+-- it (a click from you, as the game requires), Exchange reads it and closes it.
+local prompt
+local function buildPrompt()
+    prompt = CreateFrame("Frame", "RUIN_ExchangeScan", UIParent)
+    prompt:SetSize(360, 112)
+    prompt:SetPoint("TOP", UIParent, "TOP", 0, -140)
+    prompt:SetFrameStrata("DIALOG")
+    prompt:SetClampedToScreen(true)
+    W.Skin(prompt, "panel", 0.97, "glow")
+    prompt:EnableMouse(true)
+    prompt:SetMovable(true)
+    prompt:RegisterForDrag("LeftButton")
+    prompt:SetScript("OnDragStart", prompt.StartMoving)
+    prompt:SetScript("OnDragStop", prompt.StopMovingOrSizing)
+    local t = W.Label(prompt, C.gold .. "RUIN Exchange|r  Add your recipes", "GameFontNormal")
+    t:SetPoint("TOPLEFT", 12, -10)
+    prompt.text = W.Label(prompt, "", "GameFontHighlightSmall")
+    prompt.text:SetPoint("TOPLEFT", 12, -30)
+    prompt.text:SetPoint("RIGHT", prompt, "RIGHT", -12, 0)
+    prompt.text:SetJustifyH("LEFT")
+    prompt.later = W.Button(prompt, "Later", 64, function() if not InCombatLockdown() then prompt:Hide() end end)
+    prompt.later:SetPoint("BOTTOMRIGHT", -10, 10)
+    prompt.buttons = {}
+    for i = 1, 4 do
+        -- the game only lets a click of yours open a profession, so these
+        -- are the game's own secure spell buttons
+        local b = CreateFrame("Button", "RUIN_ExchangeScan" .. i, prompt, "SecureActionButtonTemplate")
+        b:SetSize(64, 22)
+        W.Skin(b, "panel", 1, "border")
+        b.label = W.Label(b, "", "GameFontHighlightSmall")
+        b.label:SetPoint("CENTER", 0, 0)
+        b:RegisterForClicks("AnyUp", "AnyDown")
+        b:SetAttribute("type", "spell")
+        b:SetScript("PreClick", function() closeAfterScan = GetTime() end)
+        b:Hide()
+        prompt.buttons[i] = b
+    end
+    prompt:SetScript("OnHide", function() prompt.dismissed = true end)
+    prompt:RegisterEvent("PLAYER_REGEN_ENABLED")
+    prompt:SetScript("OnEvent", function() if prompt.pending then M.RefreshScanPrompt(prompt.pending == "show") end end)
+    prompt:Hide()
+end
+
+-- show: true to open the window (it stays closed after "Later" until asked)
+function M.RefreshScanPrompt(show)
+    if not db then return end
+    local need = M.NeedsScan()
+    if not prompt then
+        if #need == 0 or not show then return end
+        buildPrompt()
+    end
+    if InCombatLockdown() then prompt.pending = show and "show" or "refresh"; return end
+    prompt.pending = nil
+    if #need == 0 then prompt:Hide(); return end
+    if not show and not prompt:IsShown() then return end
+    local names = {}
+    local x = 12
+    for i, b in ipairs(prompt.buttons) do
+        local p = need[i]
+        if p then
+            names[#names + 1] = p.name
+            b:SetAttribute("spell", OPEN_SPELL[p.name] or p.name)
+            b.label:SetText(p.name)
+            b:SetWidth(math.max(64, (b.label:GetStringWidth() or 50) + 18))
+            b:ClearAllPoints()
+            b:SetPoint("BOTTOMLEFT", prompt, "BOTTOMLEFT", x, 10)
+            x = x + b:GetWidth() + 6
+            b:Show()
+        else
+            b:Hide()
+        end
+    end
+    prompt.text:SetText(("The game shows recipes only while a profession's window is open. Click each one to let RUIN list what you can make (%s). The window opens and closes by itself.")
+        :format(table.concat(names, ", ")))
+    prompt.dismissed = false
+    prompt:Show()
 end
 
 function M:OnCrafts(d, sender)
@@ -372,6 +565,7 @@ end
 
 function M:OnAsk()
     C_Timer.After(3 + math.random() * 8, function()
+        M.ShareMine(true)
         local now = GetServerTime()
         for _, r in pairs(db.requests) do
             if r.exp > now and r.by == UnitName("player") then self:Send("REQ", r, "ORG", nil, R.PRIORITY.BULK) end
@@ -518,7 +712,7 @@ local function search()
         local byProf = {}
         for _, e in pairs(db.crafters) do
             for prof, list in pairs(e.profs or {}) do
-                if ui.prof == "All professions" or ui.prof == prof then
+                if not ui.findProf or ui.findProf == "All professions" or ui.findProf == prof then
                     local made = e.made and e.made[prof]
                     for n, recipe in ipairs(list) do
                         if q == "" or recipe:lower():find(q, 1, true) then
@@ -586,12 +780,19 @@ local function buildSearch(page)
         table.sort(names)
         for _, n in ipairs(names) do list[#list + 1] = n end
         return list
-    end, function() return ui.prof end, function(v) ui.prof = v; refreshPage() end)
+    end, function() return ui.findProf end, function(v) ui.findProf = v; refreshPage() end)
     ui.profBtn.tipTitle = "Show one profession"
     ui.profBtn:SetPoint("LEFT", box, "RIGHT", 8, 0)
     local tip = W.Check(page, "Tooltip prices", function() return db.tooltip end, function(v) db.tooltip = v end)
     tip:SetPoint("TOPRIGHT", page, "TOPRIGHT", -96, 0)
 
+    ui.addMine = W.Button(page, "Add my recipes", 118, function()
+        if InCombatLockdown() then return M:Print("After combat.") end
+        M.RefreshScanPrompt(true)
+    end)
+    ui.addMine.tip = "Open your professions once so RUIN can list your recipes"
+    ui.addMine:SetPoint("TOPRIGHT", page, "TOPRIGHT", -24, -26)
+    ui.addMine:SetHeight(20)
     ui.summary = W.Label(page, "", "GameFontHighlightSmall")
     ui.summary:SetPoint("TOPLEFT", 0, -30)
     ui.summary:SetPoint("RIGHT", page, "RIGHT", -6, 0)
@@ -785,10 +986,14 @@ local function buildPage(panel)
             local prices, crafters, newest = 0, 0, 0
             for _, p in pairs(db.prices) do prices = prices + 1; newest = math.max(newest, p.t or 0) end
             for _ in pairs(db.crafters) do crafters = crafters + 1 end
+            ui.summary:SetWordWrap(false)
             ui.summary:SetText(("%s%d prices known (newest %s) · %d crafters listed. Browse the auction house or open a profession to add yours.|r")
                 :format(C.dim, prices, newest > 0 and W.Ago(GetServerTime() - newest) or "never", crafters))
             ui.profBtn:SetShown(ui.mode == "Crafters")
             ui.heads:SetShown(ui.mode == "Crafters")
+            local need = (ui.mode == "Crafters") and M.NeedsScan() or {}
+            ui.addMine:SetShown(#need > 0)
+            ui.summary:SetPoint("RIGHT", ui.tabs.pages[1], "RIGHT", #need > 0 and -150 or -6, 0)
             ui.profBtn:Refresh()
             ui.list:SetItems(search())
         elseif tab == 2 then
@@ -833,7 +1038,7 @@ function M:OnEnable()
     self:Listen("ASK", "OnAsk")
     self:AddTab("Exchange", buildPage)
     R:Subscribe("CHANNELS_CHANGED", function()
-        C_Timer.After(9, function() if R:IsConnected() then self:Send("ASK", {}, "ORG") end end)
+        C_Timer.After(9, function() if R:IsConnected() then self:Send("ASK", {}, "ORG"); M.ShareMine(false) end end)
     end)
 
     self:RegisterEvent("AUCTION_ITEM_LIST_UPDATE", onClassicList)
@@ -841,8 +1046,23 @@ function M:OnEnable()
     self:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_ADDED", onBrowse)
     self:RegisterEvent("AUCTION_HOUSE_CLOSED", shareSession)
     R:Subscribe("ITEMS_LOADED", function() refreshPage() end)
-    self:RegisterEvent("TRADE_SKILL_SHOW", scheduleCraftScan)
-    self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", scheduleCraftScan)
+    self:RegisterEvent("TRADE_SKILL_SHOW", function() craftWindow = false; scheduleCraftScan() end)
+    self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", function() craftWindow = false; scheduleCraftScan() end)
+    self:RegisterEvent("CRAFT_SHOW", function() craftWindow = true; scheduleCraftScan() end)
+    self:RegisterEvent("CRAFT_UPDATE", function() craftWindow = true; scheduleCraftScan() end)
+    self:RegisterEvent("CRAFT_CLOSE", function() craftWindow = false end)
+    -- at login: share what we know, and ask for the professions that need a look
+    C_Timer.After(20, function()
+        M.ShareMine(false)
+        local need = M.NeedsScan()
+        if #need > 0 then
+            local names = {}
+            for _, p in ipairs(need) do names[#names + 1] = p.name end
+            self:Print(("To list your recipes in RUIN, open %s once (or click them in the Add your recipes window)."):format(table.concat(names, ", ")))
+            M.RefreshScanPrompt(true)
+        end
+    end)
+    self:RegisterEvent("SKILL_LINES_CHANGED", function() M.RefreshScanPrompt(false); refreshPage() end)
     self:RegisterEvent("BAG_UPDATE_DELAYED", function() if ui.swept and ui.tabs and ui.tabs.selected == 4 then refreshPage() end end)
 end
 

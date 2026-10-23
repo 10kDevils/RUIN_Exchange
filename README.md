@@ -7,7 +7,7 @@ Part of the **RUIN Gaming Companion App**. Requires **RUIN Core** (0.3.16 or lat
 ## The experience
 - **Where it lives:** the Exchange tab in the RUIN window (Search, Requests, Leveling, Bags), item tooltips, and `/ex`.
 - **Prices:** browse the auction house as usual; prices you saw are shared when you close it. Tooltips show the RUIN price, the 7-day average with its trend, and whether to sell or vendor.
-- **Crafters:** opening a profession window shares your recipes, with the item each makes and its quality. *Find: Crafters* lists them by profession: each recipe (the item in its quality color), the RUIN member who can craft it, and the item's quality. Narrow it with a search or one profession, and whisper the crafter.
+- **Crafters:** opening a profession window shares your recipes, with the item each makes and its quality. At login Exchange shares the recipes it already knows and offers *Add your recipes* for professions it hasn't read yet (or that went up): one click each opens the profession, reads it and closes it, since the game lists recipes only while that window is open. *Find: Crafters* lists them by profession: each recipe (the item in its quality color), the RUIN member who can craft it, and the item's quality. Narrow it with a search or one profession, and whisper the crafter.
 - **Leveling:** opening a profession also ranks your orange, yellow and green recipes by expected cost per skill point from RUIN prices. Hover one for its reagents.
 - **Requests:** post what you need made, with a note ("have mats, 5g tip"). Members who know the recipe get an alert. Requests close after a day, or when you press Done.
 - **Bag sweep:** *Sweep bags* labels every item Keep, Sell (AH), Vendor or Check AH, with totals.

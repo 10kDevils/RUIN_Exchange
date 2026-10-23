@@ -6,6 +6,13 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.3.6 — 2026-10-23
+
+2 changes since 0.3.5:
+
+1. **Your professions are checked at login.** Exchange shares the recipes it already has on record as soon as you're connected (and when others ask), drops professions you no longer have, and lists the professions it hasn't read yet or whose skill went up. The game shows recipes only while a profession's window is open, so the *Add your recipes* window (also *Add my recipes* on the Search page) gives one click per profession: the window opens, Exchange reads it and closes it. Enchanting's separate window on classic clients is read too.
+2. Fixed: opening the Leveling page with no plans emptied the Crafters list until you picked a profession again.
+
 ## 0.3.5 — 2026-10-22
 
 1 change since 0.3.4 (needs RUIN Core 0.3.16):
