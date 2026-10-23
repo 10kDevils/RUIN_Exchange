@@ -14,7 +14,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.3.6" })
+local M = R:RegisterModule("Exchange", { version = "0.4.0" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
