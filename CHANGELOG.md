@@ -6,6 +6,13 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.4.1 — 2026-10-27
+
+1. **Treasury book.** Your guild's treasurer (whoever holds the Treasurer office on Guild → People, or the guild master) keeps a book of the gold members give: gold traded or mailed to the treasurer is written down by itself (auction house mail isn't), and the treasurer adds anything else by hand (*Add entry*: `50, Grimlock, raid repairs`, `-20` for gold paid out). The guild sees the book, this week's totals, the top givers, and the guild bank's gold as last seen.
+2. **Crafting history.** When you trade someone an item you can craft, or enchant their item in the trade window, RUIN asks them to confirm the craft (*Log a craft* does it by hand). Confirmed crafts reach the whole org, and the History tab ranks crafters by confirmed crafts this month.
+3. Guild → People can group members by profession from Exchange's crafters list (RUIN Core 0.4.3).
+4. `/ex treasury`, `/ex history`.
+
 ## 0.4.0 — 2026-10-23 · Beta 1
 
 The RUIN Gaming Companion App enters beta: every addon is now 0.4.0. Nothing changed since 0.3.6 apart from the version number. Report what you find under Settings → Feedback.

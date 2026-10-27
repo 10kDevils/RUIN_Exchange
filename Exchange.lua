@@ -4,7 +4,9 @@
 -- history gives each price a 7-day trend. Opening a profession window
 -- shares your recipes ("who in RUIN can craft this") and works out the
 -- cheapest next skill-up from RUIN prices. Members post craft requests, and
--- a bag sweep labels every item keep, sell or vendor.
+-- a bag sweep labels every item keep, sell or vendor. The guild's treasurer
+-- keeps a treasury book (Treasury.lua), and crafts confirmed by both sides
+-- make a crafting history (History.lua).
 local ADDON, ns = ...
 local R = RUIN_API
 if not R or (R.apiLevel or 1) < 9 then
@@ -14,7 +16,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.4.0" })
+local M = R:RegisterModule("Exchange", { version = "0.4.1" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -564,6 +566,7 @@ function M:OnRequestDelete(d)
 end
 
 function M:OnAsk()
+    if ns.Treasury then ns.Treasury.Share() end
     C_Timer.After(3 + math.random() * 8, function()
         M.ShareMine(true)
         local now = GetServerTime()
@@ -966,14 +969,18 @@ local function buildBags(page)
     ui.bagList.frame:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -24, 0)
 end
 
+-- For the Treasury and History tabs (Treasury.lua, History.lua).
+ns.ExchangeInternals = { canICraft = function(name) return canICraft(name) end, refresh = function() refreshPage() end }
+
 local function buildPage(panel)
     ui.panel = panel
-    ui.tabs = W.SubTabs(panel, { "Search", "Requests", "Leveling", "Bags" }, function() refreshPage() end)
+    ui.tabs = W.SubTabs(panel, { "Search", "Requests", "Leveling", "Bags", "Treasury", "History" }, function() refreshPage() end)
     buildSearch(ui.tabs.pages[1])
     buildRequests(ui.tabs.pages[2])
     buildLeveling(ui.tabs.pages[3])
     buildBags(ui.tabs.pages[4])
-
+    ns.Treasury.Build(ui.tabs.pages[5])
+    ns.History.Build(ui.tabs.pages[6])
     refreshPage = function()
         if not ui.panel:IsVisible() then return end
         local reqs = openRequests()
@@ -981,6 +988,8 @@ local function buildPage(panel)
         for _, r in ipairs(reqs) do if canICraft(r.name) and r.by ~= UnitName("player") then mineToMake = mineToMake + 1 end end
         ui.tabs:SetLabel(2, mineToMake > 0 and ("Requests " .. C.good .. "(" .. mineToMake .. ")|r")
             or (#reqs > 0 and ("Requests (" .. #reqs .. ")") or "Requests"))
+        local waiting = ns.History.WaitingForMe()
+        ui.tabs:SetLabel(6, waiting > 0 and ("History " .. C.gold .. "(" .. waiting .. ")|r") or "History")
         local tab = ui.tabs.selected
         if tab == 1 then
             local prices, crafters, newest = 0, 0, 0
@@ -1007,6 +1016,10 @@ local function buildPage(panel)
             local list = {}
             for i, r in ipairs(plan and plan.list or {}) do if i <= 25 then list[i] = r end end
             ui.levelList:SetItems(list)
+        elseif tab == 5 then
+            ns.Treasury.Refresh()
+        elseif tab == 6 then
+            ns.History.Refresh()
         elseif tab == 4 then
             if ui.swept then
                 local items, ah, vendor = M:SweepBags()
@@ -1037,6 +1050,24 @@ function M:OnEnable()
     self:Listen("REQDEL", "OnRequestDelete")
     self:Listen("ASK", "OnAsk")
     self:AddTab("Exchange", buildPage)
+    ns.Treasury.Init(self, db)
+    ns.History.Init(self, db, ns.ExchangeInternals)
+    -- Guild > People "By profession" (RUIN Core 0.4.3)
+    if R.AddProfessionSource then
+        R:AddProfessionSource(function(name)
+            local short = R.Util.ShortName(name or ""):lower()
+            for _, e in pairs(db.crafters) do
+                if e.name and R.Util.ShortName(e.name):lower() == short then
+                    local out = {}
+                    for prof, list in pairs(e.profs or {}) do
+                        if #list > 0 then out[#out + 1] = prof end
+                    end
+                    table.sort(out)
+                    return #out > 0 and out or nil
+                end
+            end
+        end)
+    end
     R:Subscribe("CHANNELS_CHANGED", function()
         C_Timer.After(9, function() if R:IsConnected() then self:Send("ASK", {}, "ORG"); M.ShareMine(false) end end)
     end)
@@ -1070,7 +1101,7 @@ function RUIN_Exchange_Open() M:OpenTab() end
 BINDING_HEADER_RUIN_EXCHANGE = "RUIN Exchange"
 BINDING_NAME_RUIN_EXCHANGE_OPEN = "Open Exchange"
 
--- /ex [search] | /ex request <item> [-- note] | /ex bags
+-- /ex [search] | /ex request <item> [-- note] | /ex bags | treasury | history
 SLASH_RUINEXCHANGE1 = "/ex"
 SLASH_RUINEXCHANGE2 = "/exchange"
 SlashCmdList.RUINEXCHANGE = function(msg)
@@ -1085,6 +1116,10 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     if cmd:lower() == "bags" then
         ui.swept = true
         ui.tabs:Select(4)
+    elseif cmd:lower() == "treasury" then
+        ui.tabs:Select(5)
+    elseif cmd:lower() == "history" then
+        ui.tabs:Select(6)
     elseif msg ~= "" then
         ui.query, ui.mode = msg, "Crafters"
         ui.tabs:Select(1)
