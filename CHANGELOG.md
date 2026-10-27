@@ -4,6 +4,12 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+(nothing yet)
+
+## 0.4.2 — 2026-10-27
+
+1 change since 0.4.1:
+
 1. The History tab sits right after Requests: Search, Requests, History, Leveling, Bags, Treasury.
 
 ## 0.4.1 — 2026-10-27
