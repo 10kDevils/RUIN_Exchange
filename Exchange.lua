@@ -972,26 +972,30 @@ end
 -- For the Treasury and History tabs (Treasury.lua, History.lua).
 ns.ExchangeInternals = { canICraft = function(name) return canICraft(name) end, refresh = function() refreshPage() end }
 
+local TAB_NAMES = { "Search", "Requests", "History", "Leveling", "Bags", "Treasury" }
+local TAB = {}
+for i, n in ipairs(TAB_NAMES) do TAB[n] = i end
+
 local function buildPage(panel)
     ui.panel = panel
-    ui.tabs = W.SubTabs(panel, { "Search", "Requests", "Leveling", "Bags", "Treasury", "History" }, function() refreshPage() end)
-    buildSearch(ui.tabs.pages[1])
-    buildRequests(ui.tabs.pages[2])
-    buildLeveling(ui.tabs.pages[3])
-    buildBags(ui.tabs.pages[4])
-    ns.Treasury.Build(ui.tabs.pages[5])
-    ns.History.Build(ui.tabs.pages[6])
+    ui.tabs = W.SubTabs(panel, TAB_NAMES, function() refreshPage() end)
+    buildSearch(ui.tabs.pages[TAB.Search])
+    buildRequests(ui.tabs.pages[TAB.Requests])
+    ns.History.Build(ui.tabs.pages[TAB.History])
+    buildLeveling(ui.tabs.pages[TAB.Leveling])
+    buildBags(ui.tabs.pages[TAB.Bags])
+    ns.Treasury.Build(ui.tabs.pages[TAB.Treasury])
     refreshPage = function()
         if not ui.panel:IsVisible() then return end
         local reqs = openRequests()
         local mineToMake = 0
         for _, r in ipairs(reqs) do if canICraft(r.name) and r.by ~= UnitName("player") then mineToMake = mineToMake + 1 end end
-        ui.tabs:SetLabel(2, mineToMake > 0 and ("Requests " .. C.good .. "(" .. mineToMake .. ")|r")
+        ui.tabs:SetLabel(TAB.Requests, mineToMake > 0 and ("Requests " .. C.good .. "(" .. mineToMake .. ")|r")
             or (#reqs > 0 and ("Requests (" .. #reqs .. ")") or "Requests"))
         local waiting = ns.History.WaitingForMe()
-        ui.tabs:SetLabel(6, waiting > 0 and ("History " .. C.gold .. "(" .. waiting .. ")|r") or "History")
+        ui.tabs:SetLabel(TAB.History, waiting > 0 and ("History " .. C.gold .. "(" .. waiting .. ")|r") or "History")
         local tab = ui.tabs.selected
-        if tab == 1 then
+        if tab == TAB.Search then
             local prices, crafters, newest = 0, 0, 0
             for _, p in pairs(db.prices) do prices = prices + 1; newest = math.max(newest, p.t or 0) end
             for _ in pairs(db.crafters) do crafters = crafters + 1 end
@@ -1002,12 +1006,12 @@ local function buildPage(panel)
             ui.heads:SetShown(ui.mode == "Crafters")
             local need = (ui.mode == "Crafters") and M.NeedsScan() or {}
             ui.addMine:SetShown(#need > 0)
-            ui.summary:SetPoint("RIGHT", ui.tabs.pages[1], "RIGHT", #need > 0 and -150 or -6, 0)
+            ui.summary:SetPoint("RIGHT", ui.tabs.pages[TAB.Search], "RIGHT", #need > 0 and -150 or -6, 0)
             ui.profBtn:Refresh()
             ui.list:SetItems(search())
-        elseif tab == 2 then
+        elseif tab == TAB.Requests then
             ui.reqList:SetItems(reqs)
-        elseif tab == 3 then
+        elseif tab == TAB.Leveling then
             if not ui.prof or not db.plans[ui.prof] then ui.prof = next(db.plans) end
             local plan = ui.prof and db.plans[ui.prof]
             ui.profPick:SetText(ui.prof or "No profession yet")
@@ -1016,11 +1020,11 @@ local function buildPage(panel)
             local list = {}
             for i, r in ipairs(plan and plan.list or {}) do if i <= 25 then list[i] = r end end
             ui.levelList:SetItems(list)
-        elseif tab == 5 then
+        elseif tab == TAB.Treasury then
             ns.Treasury.Refresh()
-        elseif tab == 6 then
+        elseif tab == TAB.History then
             ns.History.Refresh()
-        elseif tab == 4 then
+        elseif tab == TAB.Bags then
             if ui.swept then
                 local items, ah, vendor = M:SweepBags()
                 ui.bagTotals:SetText(("%sAuction house: about %s   ·   Vendor: %s   ·   %d items|r"):format(C.dim,
@@ -1094,7 +1098,7 @@ function M:OnEnable()
         end
     end)
     self:RegisterEvent("SKILL_LINES_CHANGED", function() M.RefreshScanPrompt(false); refreshPage() end)
-    self:RegisterEvent("BAG_UPDATE_DELAYED", function() if ui.swept and ui.tabs and ui.tabs.selected == 4 then refreshPage() end end)
+    self:RegisterEvent("BAG_UPDATE_DELAYED", function() if ui.swept and ui.tabs and ui.tabs.selected == TAB.Bags then refreshPage() end end)
 end
 
 function RUIN_Exchange_Open() M:OpenTab() end
@@ -1115,14 +1119,14 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     M:OpenTab()
     if cmd:lower() == "bags" then
         ui.swept = true
-        ui.tabs:Select(4)
+        ui.tabs:Select(TAB.Bags)
     elseif cmd:lower() == "treasury" then
-        ui.tabs:Select(5)
+        ui.tabs:Select(TAB.Treasury)
     elseif cmd:lower() == "history" then
-        ui.tabs:Select(6)
+        ui.tabs:Select(TAB.History)
     elseif msg ~= "" then
         ui.query, ui.mode = msg, "Crafters"
-        ui.tabs:Select(1)
+        ui.tabs:Select(TAB.Search)
         if ui.searchBox then ui.searchBox:SetText(msg) end
     end
     refreshPage()
