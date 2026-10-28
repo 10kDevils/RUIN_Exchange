@@ -123,9 +123,10 @@ end
 
 function M:OnPrices(d, sender)
     if type(d.l) ~= "table" or type(d.t) ~= "number" then return end
-    for i = 1, #d.l - 1, 2 do
+    if R.SaneTime and not R:SaneTime(d.t) then return end         -- a future time would win forever
+    for i = 1, math.min(#d.l, 400) - 1, 2 do
         local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
-        if id and p then
+        if id and p and p >= 0 and p < 1e11 and id > 0 and id == math.floor(id) then
             local cur = db.prices[id]
             if not cur or (cur.t or 0) < d.t then db.prices[id] = { p = p, t = d.t, by = sender } end
             noteHistory(id, p, d.t)
@@ -478,6 +479,10 @@ end
 
 function M:OnCrafts(d, sender)
     if type(d.g) ~= "string" or type(d.p) ~= "string" or type(d.l) ~= "table" then return end
+    -- a crafter's entry is theirs alone: same GUID, same name
+    if R.GUIDMatches and not R:GUIDMatches(sender, d.g) then return end
+    local had = db.crafters[d.g]
+    if had and type(had.name) == "string" and R.SameName and not R:SameName(had.name, sender) then return end
     local e = db.crafters[d.g] or { profs = {} }
     e.name, e.guild, e.t = sender, d.gu, GetServerTime()
     e.profs[d.p] = d.l
@@ -550,6 +555,11 @@ end
 function M:OnRequest(r, sender)
     if type(r) ~= "table" or type(r.id) ~= "string" or type(r.item) ~= "string" or type(r.exp) ~= "number" then return end
     if db.requests[r.id] then return end
+    local now = GetServerTime()
+    if r.exp > now + REQUEST_HOURS * 3600 + 600 then return end
+    r.t = (R.SaneTime and R:SaneTime(r.t)) or now
+    r.id, r.item = r.id:sub(1, 24), r.item:sub(1, 200)
+    r.note = type(r.note) == "string" and r.note:sub(1, 60) or ""
     r.by = sender
     r.name = type(r.name) == "string" and r.name or requestName(r)
     db.requests[r.id] = r
@@ -561,8 +571,10 @@ function M:OnRequest(r, sender)
     refreshPage()
 end
 
-function M:OnRequestDelete(d)
-    if type(d.id) == "string" and db.requests[d.id] then db.requests[d.id] = nil; refreshPage() end
+function M:OnRequestDelete(d, sender)
+    -- only whoever posted the request closes it
+    local r = type(d.id) == "string" and db.requests[d.id]
+    if r and R.SameName and R:SameName(r.by, sender) then db.requests[d.id] = nil; refreshPage() end
 end
 
 function M:OnAsk()

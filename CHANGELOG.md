@@ -6,6 +6,12 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.4.3 — 2026-10-28
+
+Security update (works best with RUIN Core 0.4.5). 1 change since 0.4.2:
+
+1. Only your guild's keeper (the guild master or its Treasurer) can write in the treasury book; a crafter's listing belongs to that crafter (same name and GUID); only whoever posted a craft request can close it; and prices, requests and crafting history dated in the future are refused.
+
 ## 0.4.2 — 2026-10-27
 
 1 change since 0.4.1:

@@ -2,7 +2,7 @@
 ## Title: |cffe6b862RUIN|r Exchange
 ## Notes: Auction prices shared across RUIN, a "who can craft it" directory, sell-or-vendor advice on tooltips, the guild treasury book and a crafting history.
 ## Author: RUIN
-## Version: 0.4.2
+## Version: 0.4.3
 ## Dependencies: RUIN_Core
 ## SavedVariables: RUIN_ExchangeDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02

@@ -86,9 +86,25 @@ function Treasury.Remove(id)
     return true
 end
 
-local function onBook(_, d, sender)
+-- Is this guildmate the keeper of your guild's book (guild master, or the
+-- Treasurer office of your guild)? Checked by who sent the entry.
+local function senderIsKeeper(sender)
+    if not R.GuildRankOf then return true end              -- an older RUIN Core can't tell
+    local rank = R:GuildRankOf(sender)
+    if rank == nil then return false end                   -- not in your guild
+    if rank == 0 then return true end
+    for _, o in ipairs(R.GetOffices and R:GetOffices() or {}) do
+        if type(o) == "table" and type(o.title) == "string" and o.title:lower():find("treasurer", 1, true)
+            and R:SameName(o.name, sender) then return true end
+    end
+    return false
+end
+
+local function onBook(_, d, sender, scope)
+    if scope ~= "GUILD" or not senderIsKeeper(sender) then return end
     local e = clean(d)
     if not e then return end
+    if R.SaneTime and not R:SaneTime(e.t) then return end
     local cur = book()[e.id]
     if cur and (cur.t or 0) >= e.t and not (e.del and not cur.del) then return end
     e.by = sender

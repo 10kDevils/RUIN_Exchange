@@ -37,7 +37,8 @@ local function newId() return tostring(R:GetPlayerGUID() or "x"):sub(-4) .. now(
 local function clean(d)
     if type(d) ~= "table" or type(d.id) ~= "string" or type(d.item) ~= "string" or type(d.cr) ~= "string" or type(d.cu) ~= "string" then return nil end
     return { id = d.id:sub(1, 24), item = d.item:gsub("|", "/"):sub(1, 120), link = type(d.link) == "string" and d.link:sub(1, 200) or nil,
-             cr = d.cr:sub(1, 48), cu = d.cu:sub(1, 48), prof = type(d.prof) == "string" and d.prof:sub(1, 30) or nil, t = tonumber(d.t) or now() }
+             cr = d.cr:sub(1, 48), cu = d.cu:sub(1, 48), prof = type(d.prof) == "string" and d.prof:sub(1, 30) or nil,
+             t = (R.SaneTime and R:SaneTime(d.t)) or now() }
 end
 
 -- The crafter logs a craft; the customer confirms it.
