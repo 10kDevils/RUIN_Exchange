@@ -524,6 +524,11 @@ local function craftersOf(itemName)
     return out
 end
 
+-- For other parts of RUIN (the Planner page): who in RUIN can craft an item,
+-- and the auction price RUIN knows for one (copper per item), or nil.
+function M.CraftersOf(itemName) return craftersOf(itemName) end
+function M.PriceOf(id) id = tonumber(id); return id and db and db.prices[id] and db.prices[id].p or nil end
+
 ---------------------------------------------------------------------------
 -- Craft requests
 ---------------------------------------------------------------------------

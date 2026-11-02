@@ -4,7 +4,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
-(nothing yet)
+1. Other parts of RUIN can ask who can craft an item and RUIN's auction price for one (the Planner page uses both).
 
 ## 0.4.3 — 2026-10-28
 
