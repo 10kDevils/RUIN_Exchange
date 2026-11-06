@@ -16,7 +16,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.5.0" })
+local M = R:RegisterModule("Exchange", { version = "0.5.1" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -299,7 +299,7 @@ local function scanCrafts()
     local sig = #list .. ":" .. table.concat(list, "|"):len()
     if lastCraftSig[prof] == sig then return end
     lastCraftSig[prof] = sig
-    M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = ids, q = qs }, "ORG", nil, R.PRIORITY.BULK)
+    M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = ids, q = qs, s = tonumber(skill) }, "ORG", nil, R.PRIORITY.BULK)
     M:Print(("Shared %d %s recipes with RUIN."):format(#list, prof))
 end
 
@@ -392,9 +392,15 @@ function M.ShareMine(force)
         end
     end
     sharedAt = GetTime()
+    -- your skill now (it may have gone up since the recipes were read)
+    e.skill = e.skill or {}
+    for _, p in ipairs(profs or {}) do
+        if tonumber(p.skill) then e.skill[p.name] = tonumber(p.skill) end
+    end
+    if e.skill.Mining and e.profs.Smelting then e.skill.Smelting = e.skill.Mining end
     for prof, list in pairs(e.profs) do
         local m = e.made and e.made[prof]
-        M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q }, "ORG", nil, R.PRIORITY.BULK)
+        M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q, s = e.skill[prof] }, "ORG", nil, R.PRIORITY.BULK)
     end
 end
 
@@ -486,6 +492,11 @@ function M:OnCrafts(d, sender)
     local e = db.crafters[d.g] or { profs = {} }
     e.name, e.guild, e.t = sender, d.gu, GetServerTime()
     e.profs[d.p] = d.l
+    -- their skill in it (older RUIN versions don't send one)
+    local skill = tonumber(d.s)
+    e.skill = e.skill or {}
+    if #d.l == 0 then e.skill[d.p] = nil
+    elseif skill and skill >= 0 and skill <= 1000 then e.skill[d.p] = math.floor(skill) end
     if type(d.i) == "table" then
         local ids, qs = {}, {}
         for n = 1, #d.l do
@@ -719,28 +730,80 @@ end
 ---------------------------------------------------------------------------
 -- Page
 ---------------------------------------------------------------------------
+-- Opens a whisper to the full name. The game's own helper types
+-- "/cw Name Surname" into the chat box, and the chat box then guesses where a
+-- WoW Forever name ends (often after the first name), so set the target directly.
 local function whisper(name)
-    local send = ChatFrame_SendTell or (ChatFrameUtil and ChatFrameUtil.SendTell)
+    if type(name) ~= "string" or name == "" then return end
+    local CF = rawget(_G, "ChatFrameUtil")
+    local choose = (CF and CF.ChooseBoxForSend) or rawget(_G, "ChatEdit_ChooseBoxForSend")
+    local open = (CF and CF.OpenChat) or rawget(_G, "ChatFrame_OpenChat")
+    local box = choose and choose()
+    if box and open then
+        open("")
+        box:SetAttribute("chatType", "WHISPER")
+        box:SetAttribute("tellTarget", name)
+        if box.UpdateHeader then box:UpdateHeader()
+        elseif rawget(_G, "ChatEdit_UpdateHeader") then ChatEdit_UpdateHeader(box) end
+        return
+    end
+    local send = rawget(_G, "ChatFrame_SendTell") or (CF and CF.SendTell)
     if send then send(name) end
+end
+M.Whisper = whisper
+
+-- Who in RUIN is online right now, by GUID.
+local function onlineSet()
+    local set = {}
+    for _, p in ipairs((R.GetOnlineMembers and R:GetOnlineMembers()) or {}) do
+        if p.guid then set[p.guid] = true end
+    end
+    return set
+end
+
+-- Everyone who can craft a recipe, best pick first: online members with the
+-- lowest skill in the profession (they gain the most from crafting it), then
+-- you, then (with "Offline crafters") offline members, lowest skill first.
+-- Unknown skill (older RUIN versions) sorts after known skill.
+local function rankCrafters(list)
+    table.sort(list, function(a, b)
+        local ga = a.online and (a.self and 1 or 0) or 2
+        local gb = b.online and (b.self and 1 or 0) or 2
+        if ga ~= gb then return ga < gb end
+        local sa, sb = a.skill or 100000, b.skill or 100000
+        if sa ~= sb then return sa < sb end
+        return tostring(a.name) < tostring(b.name)
+    end)
+    return list
 end
 
 local function search()
     local q = ui.query:lower()
     local items = {}
     if ui.mode == "Crafters" then
-        -- by profession, then recipe, then crafter; each row shows the item's quality
+        -- by profession, then recipe; each recipe shows one crafter (pick another from the list on the name)
+        local online, me = onlineSet(), R:GetPlayerGUID()
         local byProf = {}
-        for _, e in pairs(db.crafters) do
+        for guid, e in pairs(db.crafters) do
+            local isOnline = online[guid] == true or guid == me
             for prof, list in pairs(e.profs or {}) do
                 if not ui.findProf or ui.findProf == "All professions" or ui.findProf == prof then
                     local made = e.made and e.made[prof]
+                    local skill = e.skill and tonumber(e.skill[prof])
                     for n, recipe in ipairs(list) do
                         if q == "" or recipe:lower():find(q, 1, true) then
                             local iid = made and tonumber(made.i[n]) or 0
                             local quality = made and tonumber(made.q[n]) or -1
                             byProf[prof] = byProf[prof] or {}
-                            table.insert(byProf[prof], { recipe = recipe, who = e.name, guild = e.guild,
-                                id = iid > 0 and iid or nil, quality = quality >= 0 and quality or nil })
+                            local rec = byProf[prof][recipe]
+                            if not rec then
+                                rec = { recipe = recipe, prof = prof, key = prof .. "\001" .. recipe, crafters = {} }
+                                byProf[prof][recipe] = rec
+                            end
+                            if iid > 0 and not rec.id then rec.id = iid end
+                            if quality >= 0 and not rec.quality then rec.quality = quality end
+                            rec.crafters[#rec.crafters + 1] = { guid = guid, name = e.name, guild = e.guild, skill = skill,
+                                online = isOnline, self = guid == me }
                         end
                     end
                 end
@@ -750,19 +813,34 @@ local function search()
         for prof in pairs(byProf) do profs[#profs + 1] = prof end
         table.sort(profs)
         for _, prof in ipairs(profs) do
-            local rows = byProf[prof]
-            table.sort(rows, function(a, b)
-                if a.recipe ~= b.recipe then return a.recipe < b.recipe end
-                return tostring(a.who) < tostring(b.who)
-            end)
-            items[#items + 1] = { header = prof, count = #rows }
-            for _, r in ipairs(rows) do
-                if #items >= 300 then return items end
-                local _, link, iq = nil, nil, nil
-                if r.id then _, link, iq = R.Items.Info(r.id) end
-                r.quality = r.quality or iq
-                r.link = link
-                items[#items + 1] = r
+            local rows = {}
+            for _, rec in pairs(byProf[prof]) do
+                rankCrafters(rec.crafters)
+                -- without "Offline crafters", only online ones count
+                if not db.showOffline then
+                    local on = {}
+                    for _, c in ipairs(rec.crafters) do if c.online then on[#on + 1] = c end end
+                    rec.crafters = on
+                end
+                if #rec.crafters > 0 then
+                    -- the one you picked from the list, while they still can
+                    local picked = ui.picked and ui.picked[rec.key]
+                    rec.who = rec.crafters[1]
+                    for _, c in ipairs(rec.crafters) do if c.guid == picked then rec.who = c end end
+                    rows[#rows + 1] = rec
+                end
+            end
+            table.sort(rows, function(a, b) return a.recipe < b.recipe end)
+            if #rows > 0 then
+                items[#items + 1] = { header = prof, count = #rows }
+                for _, r in ipairs(rows) do
+                    if #items >= 300 then return items end
+                    local _, link, iq = nil, nil, nil
+                    if r.id then _, link, iq = R.Items.Info(r.id) end
+                    r.quality = r.quality or iq
+                    r.link = link
+                    items[#items + 1] = r
+                end
             end
         end
         return items
@@ -783,7 +861,71 @@ local function search()
     return items
 end
 
+-- "Brin Stone  112", "You  75", "Kell Dawn  140  offline".
+function M.CrafterLabel(c)
+    if type(c) ~= "table" then return tostring(c or "") end
+    local name = c.self and (C.gold .. "You|r") or W.ClassName(c.name)
+    local skill = c.skill and ("  " .. C.white .. c.skill .. "|r") or (C.dim .. "  skill ?|r")
+    return name .. skill .. (c.online and "" or (C.dim .. "  offline|r"))
+end
+
+-- One list for the whole page (rows scroll, and a menu inside the list would be clipped).
+function M.OpenCrafterList(anchor, rec)
+    local pick = ui.crafterList
+    if not (pick and rec) then return end
+    if pick:IsShown() and pick.rec == rec.key then pick:Hide(); return end
+    pick.rec = rec.key
+    local width = 300
+    for i, c in ipairs(rec.crafters) do
+        local b = pick.items[i]
+        if not b then
+            b = W.Button(pick, "", width - 8)
+            b:SetHeight(20)
+            if b.label then b.label:SetJustifyH("LEFT") end
+            pick.items[i] = b
+        end
+        b:ClearAllPoints()
+        b:SetPoint("TOPLEFT", 4, -24 - (i - 1) * 21)
+        b:SetText(M.CrafterLabel(c) .. ((c.guild and c.guild ~= "") and (C.dim .. "  " .. c.guild .. "|r") or ""))
+        if rec.who and c.guid == rec.who.guid then b:LockHighlight() else b:UnlockHighlight() end
+        b:SetScript("OnClick", function()
+            ui.picked = ui.picked or {}
+            ui.picked[rec.key] = c.guid
+            pick:Hide()
+            refreshPage()
+        end)
+        b:Show()
+    end
+    for i = #rec.crafters + 1, #pick.items do pick.items[i]:Hide() end
+    pick.title:SetText(C.gold .. rec.recipe .. "|r  " .. C.dim .. "who can craft it|r")
+    pick:SetSize(width, 28 + #rec.crafters * 21)
+    pick:ClearAllPoints()
+    pick:SetPoint("TOPLEFT", anchor, "BOTTOMLEFT", 0, -2)
+    pick:Show()
+end
+
+-- The Find list for a query, as the page shows it (for tests and other modules).
+function M.SearchRows(query, prof, mode)
+    local q, p, m = ui.query, ui.findProf, ui.mode
+    ui.query, ui.findProf, ui.mode = query or "", prof or "All professions", mode or "Crafters"
+    local ok, rows = pcall(search)
+    ui.query, ui.findProf, ui.mode = q, p, m
+    return ok and rows or {}
+end
+M.UI = ui
+
 local function buildSearch(page)
+    local pick = W.Card(page)
+    W.Skin(pick, "panel", 1, "glow")
+    if pick.SetFrameStrata then pick:SetFrameStrata("DIALOG") end
+    pick:EnableMouse(true)
+    pick.items = {}
+    pick.title = W.Label(pick, "", "GameFontHighlightSmall")
+    pick.title:SetPoint("TOPLEFT", 8, -6)
+    pick:Hide()
+    page:HookScript("OnHide", function() pick:Hide() end)
+    ui.crafterList = pick
+
     local mode = W.Cycle(page, 150, { "Crafters", "Prices" }, function() return ui.mode end,
         function(v) ui.mode = v; ui.searchBox:SetPlaceholder(v == "Crafters" and "Recipe, e.g. Flask" or "Item name, e.g. Linen Cloth"); refreshPage() end, "Find: ")
     mode.tipTitle = "Search who can craft something, or what it sells for"
@@ -805,6 +947,10 @@ local function buildSearch(page)
     ui.profBtn:SetPoint("LEFT", box, "RIGHT", 8, 0)
     local tip = W.Check(page, "Tooltip prices", function() return db.tooltip end, function(v) db.tooltip = v end)
     tip:SetPoint("TOPRIGHT", page, "TOPRIGHT", -96, 0)
+    ui.offlineCheck = W.Check(page, "Offline crafters", function() return db.showOffline end,
+        function(v) db.showOffline = v; refreshPage() end)
+    ui.offlineCheck:SetPoint("TOPRIGHT", page, "TOPRIGHT", -290, -26)
+    ui.offlineCheck.tip = "Also show recipes only offline members know, and offline crafters in each recipe's list"
 
     ui.addMine = W.Button(page, "Add my recipes", 118, function()
         if InCombatLockdown() then return M:Print("After combat.") end
@@ -821,7 +967,7 @@ local function buildSearch(page)
     ui.heads:SetPoint("TOPLEFT", 0, -46)
     ui.heads:SetPoint("RIGHT", page, "RIGHT", -24, 0)
     ui.heads:SetHeight(14)
-    for _, h in ipairs({ { "Profession / recipe", 4 }, { "Crafter", 330 }, { "Quality", 536 } }) do
+    for _, h in ipairs({ { "Profession / recipe", 4 }, { "Crafter (lowest skill online first)", 330 }, { "Quality", 536 } }) do
         local fs = W.Label(ui.heads, h[1], "GameFontHighlightSmall")
         fs:SetTextColor(W.PALETTE.sub[1], W.PALETTE.sub[2], W.PALETTE.sub[3])
         fs:SetPoint("LEFT", h[2], 0)
@@ -836,6 +982,12 @@ local function buildSearch(page)
         row.crafter:SetPoint("LEFT", 330, 0)
         row.crafter:SetWidth(200)
         row.crafter:SetWordWrap(false)
+        -- the crafter's name is a button: it opens everyone else who can craft it
+        row.pick = W.Button(row, "", 200, function(self) M.OpenCrafterList(self, self.rec) end)
+        row.pick:SetPoint("LEFT", 326, 0)
+        row.pick:SetHeight(20)
+        if row.pick.label then row.pick.label:SetJustifyH("LEFT"); row.pick.label:SetWordWrap(false) end
+        W.MarkChoice(row.pick, "Everyone who can craft it")
         row.quality = W.Label(row, "", "GameFontHighlightSmall")
         row.quality:SetPoint("LEFT", 536, 0)
         row.quality:SetWidth(90)
@@ -843,8 +995,12 @@ local function buildSearch(page)
         row.btn = W.Button(row, "Whisper", 70)
         row.btn:SetPoint("RIGHT", 0, 0)
     end, function(row, item)
-        row.btn:SetShown(item.who ~= nil)
-        row.btn:SetScript("OnClick", function() if item.who then whisper(item.who) end end)
+        local who = item.who
+        local whoName = type(who) == "table" and who.name or who
+        local canWhisper = whoName ~= nil and not (type(who) == "table" and (who.self or not who.online))
+        row.btn:SetShown(canWhisper)
+        row.btn:SetScript("OnClick", function() if canWhisper then whisper(whoName) end end)
+        row.pick:Hide()
         row.link = item.link
         if item.header then                        -- a profession heading
             row.text:SetPoint("RIGHT", row, "RIGHT", -4, 0)
@@ -853,7 +1009,10 @@ local function buildSearch(page)
         elseif item.recipe then                    -- recipe, crafter, quality
             row.text:SetPoint("RIGHT", row, "LEFT", 324, 0)
             row.text:SetText("   " .. (item.id and R.Items.Text(item.id, item.recipe, item.quality) or (C.white .. item.recipe .. "|r")))
-            row.crafter:SetText(W.ClassName(item.who) .. C.dim .. ((item.guild and item.guild ~= "") and ("  " .. item.guild) or "") .. "|r")
+            row.crafter:SetText("")
+            row.pick.rec = item
+            row.pick:SetText(M.CrafterLabel(who) .. (#item.crafters > 1 and (C.dim .. "  +" .. (#item.crafters - 1) .. "|r") or ""))
+            row.pick:Show()
             row.quality:SetText(item.quality and (R.Items.QualityHex(item.quality) .. R.Items.QualityName(item.quality) .. "|r")
                 or (C.dim .. (item.id and "?" or "no item") .. "|r"))
         else                                       -- a price line
@@ -1023,7 +1182,9 @@ local function buildPage(panel)
             ui.heads:SetShown(ui.mode == "Crafters")
             local need = (ui.mode == "Crafters") and M.NeedsScan() or {}
             ui.addMine:SetShown(#need > 0)
-            ui.summary:SetPoint("RIGHT", ui.tabs.pages[TAB.Search], "RIGHT", #need > 0 and -150 or -6, 0)
+            ui.offlineCheck:SetShown(ui.mode == "Crafters")
+            if ui.offlineCheck.Refresh then ui.offlineCheck:Refresh() end
+            ui.summary:SetPoint("RIGHT", ui.tabs.pages[TAB.Search], "RIGHT", ui.mode == "Crafters" and -405 or (#need > 0 and -150 or -6), 0)
             ui.profBtn:Refresh()
             ui.list:SetItems(search())
         elseif tab == TAB.Requests then

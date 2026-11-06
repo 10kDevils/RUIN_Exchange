@@ -6,6 +6,14 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.5.1 — 2026-11-06
+
+- Find: Crafters shows one row per recipe instead of one per crafter. Each recipe shows the online RUIN member with the lowest skill in the profession (they gain the most from crafting it), with their skill; you come after other members.
+- Click the crafter's name for everyone who can craft it, lowest skill first, with their guild; pick one to make them the recipe's crafter.
+- New *Offline crafters* switch: also lists recipes only offline members know, and offline crafters (marked offline, no Whisper) after the online ones.
+- Your profession skill now travels with your recipes. Members on an older RUIN show "skill ?" and sort after known skills.
+- *Whisper* opens a whisper to the crafter's full name. Before, the game's whisper helper typed "/cw First Last" into the chat box (/cw is the game's character whisper), and the chat box cut a WoW Forever name down to the first name.
+
 ## 0.5.0 — 2026-11-02
 
 RUIN 0.5.0: every addon in the suite moves to 0.5.0 together. No changes to Exchange since 0.4.4.
