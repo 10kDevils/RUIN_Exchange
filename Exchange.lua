@@ -1080,17 +1080,16 @@ local function buildLeveling(page)
     local h = W.Header(page, "Cheapest next skill-ups")
     h:SetPoint("TOPLEFT", 0, -2)
     ui.profs = {}
-    ui.profPick = W.Button(page, "", 160, function()
-        local names = {}
-        for prof in pairs(db.plans) do names[#names + 1] = prof end
-        table.sort(names)
-        if #names == 0 then return end
-        local idx = 1
-        for i, n in ipairs(names) do if n == ui.prof then idx = i end end
-        ui.prof = names[idx % #names + 1]
-        refreshPage()
-    end)
+    ui.profPick = W.Button(page, "", 160, nil)
     W.MarkChoice(ui.profPick)
+    W.AttachMenu(ui.profPick, { width = 160,
+        items = function()
+            local names = {}
+            for prof in pairs(db.plans) do names[#names + 1] = prof end
+            table.sort(names)
+            return names
+        end,
+        current = function() return ui.prof end, pick = function(v) ui.prof = v; refreshPage() end })
     ui.profPick:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 2)
     ui.levelInfo = W.Label(page, "", "GameFontHighlightSmall")
     ui.levelInfo:SetPoint("TOPLEFT", 0, -22)

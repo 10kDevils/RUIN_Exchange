@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.5.1 — 2026-11-06
 
+- Leveling: the profession picker opens a list of your professions instead of stepping through them; Crafters / Prices opens a list too (needs RUIN Core 0.5.3).
 - Find: Crafters shows one row per recipe instead of one per crafter. Each recipe shows the online RUIN member with the lowest skill in the profession (they gain the most from crafting it), with their skill; you come after other members.
 - Click the crafter's name for everyone who can craft it, lowest skill first, with their guild; pick one to make them the recipe's crafter.
 - New *Offline crafters* switch: also lists recipes only offline members know, and offline crafters (marked offline, no Whisper) after the online ones.
