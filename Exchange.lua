@@ -156,6 +156,7 @@ local function finishFullScan(found)
     end
     db.lastFullScan = now
     scanning = nil
+    M.RepaintRecipeCosts()
     M:Print(("Full scan done: %d prices read (%d new or changed will be shared when you close the auction house)."):format(n, shared))
     refreshPage()
 end
@@ -243,6 +244,7 @@ function M:OnPrices(d, sender)
             noteHistory(id, p, d.t)
         end
     end
+    if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
 end
 
 local function price(id) return db.prices[id] and db.prices[id].p end
@@ -464,6 +466,124 @@ local function scheduleCraftScan()
         craftScanPending = false
         scanCrafts()
     end)
+end
+
+---------------------------------------------------------------------------
+-- Cost per skill point beside each recipe in the profession window, from
+-- current RUIN prices: what one craft's reagents cost divided by the chance
+-- it gives a point (orange always, yellow 3 in 4, green 1 in 4). Grey
+-- recipes show nothing; a recipe with an unpriced reagent shows "?".
+---------------------------------------------------------------------------
+local function reagentsCraft(index)
+    local out = {}
+    if not (GetCraftNumReagents and GetCraftReagentItemLink) then return out end
+    for j = 1, GetCraftNumReagents(index) or 0 do
+        local link = GetCraftReagentItemLink(index, j)
+        local _, _, count = GetCraftReagentInfo(index, j)
+        local id = link and tonumber(link:match("item:(%d+)"))
+        if id then out[#out + 1] = { id, count or 1 } end
+    end
+    return out
+end
+
+-- "1s 20c/pt", "?/pt" or nil (grey, or nothing to show)
+function M.PointText(diff, reagents)
+    local chance = SKILLUP_CHANCE[diff]
+    if not chance or not reagents or #reagents == 0 then return nil end
+    local cost, missing = craftCost(reagents)
+    if #missing > 0 then return C.dim .. "?/pt|r" end
+    return C.gold .. W.Money(cost / chance) .. "|r" .. C.dim .. "/pt|r"
+end
+
+local function costLabel(row)
+    if not row.ruinCost then
+        row.ruinCost = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        row.ruinCost:SetJustifyH("RIGHT")
+    end
+    return row.ruinCost
+end
+
+local function paintCost(row, text, right)
+    local fs = costLabel(row)
+    fs:ClearAllPoints()
+    fs:SetPoint("RIGHT", row, "RIGHT", right or -4, 0)
+    fs:SetText(text or "")
+    if text ~= nil and db.pointCosts ~= false then fs:Show() else fs:Hide() end
+end
+
+-- modern window: rows of ProfessionsFrame's recipe list
+local function paintModernRow(frame)
+    local ed = frame and frame.GetElementData and frame:GetElementData()
+    local data = ed and ed.GetData and ed:GetData()
+    local info = data and data.recipeInfo
+    if not (info and info.recipeID) then
+        if frame and frame.ruinCost then frame.ruinCost:Hide() end
+        return
+    end
+    local text = info.learned and info.relativeDifficulty and M.PointText(info.relativeDifficulty, reagentsModern(info.recipeID))
+    paintCost(frame, text or nil, -28)     -- clear of the skill-up number on the right
+end
+
+local function paintModern()
+    local list = ProfessionsFrame and ProfessionsFrame.CraftingPage and ProfessionsFrame.CraftingPage.RecipeList
+    local box = list and list.ScrollBox
+    if box and box.ForEachFrame then box:ForEachFrame(paintModernRow) end
+end
+
+-- classic windows: TradeSkillSkill1..n and Craft1..n, each button's ID is its recipe index
+local function paintClassic()
+    if TradeSkillFrame and TradeSkillFrame:IsShown() and GetTradeSkillInfo then
+        for i = 1, TRADE_SKILLS_DISPLAYED or 8 do
+            local b = _G["TradeSkillSkill" .. i]
+            if b then
+                local index = b:GetID()
+                local name, kind = GetTradeSkillInfo(index)
+                local text = name and kind ~= "header" and M.PointText(CLASSIC_DIFFICULTY[kind], reagentsClassic(index))
+                paintCost(b, b:IsShown() and text or nil, -4)
+            end
+        end
+    end
+    if CraftFrame and CraftFrame:IsShown() and GetCraftInfo then
+        for i = 1, CRAFTS_DISPLAYED or 8 do
+            local b = _G["Craft" .. i]
+            if b then
+                local index = b:GetID()
+                local name, _, kind = GetCraftInfo(index)
+                local text = name and kind ~= "header" and M.PointText(CLASSIC_DIFFICULTY[kind], reagentsCraft(index))
+                paintCost(b, b:IsShown() and text or nil, -4)
+            end
+        end
+    end
+end
+
+local hooked = {}
+function M.HookRecipeCosts()
+    local list = ProfessionsFrame and ProfessionsFrame.CraftingPage and ProfessionsFrame.CraftingPage.RecipeList
+    local box = list and list.ScrollBox
+    if box and not hooked.modern then
+        hooked.modern = true
+        if ScrollUtil and ScrollUtil.AddInitializedFrameCallback then
+            ScrollUtil.AddInitializedFrameCallback(box, function(_, frame) paintModernRow(frame) end, M, true)
+        elseif box.RegisterCallback and box.Event and box.Event.OnDataRangeChanged then
+            box:RegisterCallback(box.Event.OnDataRangeChanged, paintModern, M)
+        end
+    end
+    if TradeSkillFrame_Update and not hooked.trade then
+        hooked.trade = true
+        hooksecurefunc("TradeSkillFrame_Update", paintClassic)
+    end
+    if CraftFrame_Update and not hooked.craft then
+        hooked.craft = true
+        hooksecurefunc("CraftFrame_Update", paintClassic)
+    end
+    paintModern()
+    paintClassic()
+end
+
+-- prices that change while the window is open repaint the costs
+function M.RepaintRecipeCosts()
+    paintModern()
+    paintClassic()
 end
 
 ---------------------------------------------------------------------------
@@ -1426,10 +1546,10 @@ function M:OnEnable()
     self:RegisterEvent("AUCTION_HOUSE_SHOW", onAuctionShow)
     self:RegisterEvent("AUCTION_HOUSE_CLOSED", function() scanning, ahOpen = nil, nil; shareSession() end)
     R:Subscribe("ITEMS_LOADED", function() refreshPage() end)
-    self:RegisterEvent("TRADE_SKILL_SHOW", function() craftWindow = false; scheduleCraftScan() end)
-    self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", function() craftWindow = false; scheduleCraftScan() end)
-    self:RegisterEvent("CRAFT_SHOW", function() craftWindow = true; scheduleCraftScan() end)
-    self:RegisterEvent("CRAFT_UPDATE", function() craftWindow = true; scheduleCraftScan() end)
+    self:RegisterEvent("TRADE_SKILL_SHOW", function() craftWindow = false; scheduleCraftScan(); C_Timer.After(0, M.HookRecipeCosts) end)
+    self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", function() craftWindow = false; scheduleCraftScan(); C_Timer.After(0, M.RepaintRecipeCosts) end)
+    self:RegisterEvent("CRAFT_SHOW", function() craftWindow = true; scheduleCraftScan(); C_Timer.After(0, M.HookRecipeCosts) end)
+    self:RegisterEvent("CRAFT_UPDATE", function() craftWindow = true; scheduleCraftScan(); C_Timer.After(0, M.RepaintRecipeCosts) end)
     self:RegisterEvent("CRAFT_CLOSE", function() craftWindow = false end)
     -- at login: share what we know, and ask for the professions that need a look
     C_Timer.After(20, function()
@@ -1450,7 +1570,7 @@ function RUIN_Exchange_Open() M:OpenTab() end
 BINDING_HEADER_RUIN_EXCHANGE = "RUIN Exchange"
 BINDING_NAME_RUIN_EXCHANGE_OPEN = "Open Exchange"
 
--- /ex [search] | /ex request <item> [-- note] | /ex bags | treasury | history | scan | autoscan
+-- /ex [search] | /ex request <item> [-- note] | /ex bags | treasury | history | scan | autoscan | costs
 SLASH_RUINEXCHANGE1 = "/ex"
 SLASH_RUINEXCHANGE2 = "/exchange"
 SlashCmdList.RUINEXCHANGE = function(msg)
@@ -1463,6 +1583,11 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     end
     if cmd:lower() == "scan" then
         M.FullScan(false)
+        return
+    elseif cmd:lower() == "costs" then
+        db.pointCosts = db.pointCosts == false
+        M:Print("Cost per point in the profession window: " .. (db.pointCosts and "on" or "off"))
+        M.RepaintRecipeCosts()
         return
     elseif cmd:lower() == "autoscan" then
         db.autoScan = db.autoScan == false

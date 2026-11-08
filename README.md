@@ -13,7 +13,7 @@ Part of the **RUIN Gaming Companion App**. Requires **RUIN Core** (0.3.16 or lat
 - **Bag sweep:** *Sweep bags* labels every item Keep, Sell (AH), Vendor or Check AH, with totals.
 - **Treasury:** your guild's treasurer (whoever holds the Treasurer office on Guild → People, or the guild master) keeps a book of the gold members give. Gold traded or mailed to the treasurer is written down by itself (auction house mail isn't); *Add entry* adds the rest (`50, Grimlock, raid repairs`, or `-20, ...` for gold paid out). The guild sees the book, this week's and all-time totals, the top givers (*Show: Givers*) and the guild bank's gold as last seen.
 - **History:** when you trade someone an item you can craft, or enchant their item in the trade window, Exchange asks them to confirm the craft (*Log a craft* does it by hand: `Robe of Power, Grimlock`). Once they confirm, the whole org's History has it, and crafters are ranked by confirmed crafts this month. Only the customer can confirm.
-- **Commands:** `/ex <search>`, `/ex request <item> -- <note>`, `/ex bags`, `/ex treasury`, `/ex history`, `/ex scan` (full auction house scan), `/ex autoscan`.
+- **Commands:** `/ex <search>`, `/ex request <item> -- <note>`, `/ex bags`, `/ex treasury`, `/ex history`, `/ex scan` (full auction house scan), `/ex autoscan`, `/ex costs` (cost per point in the profession window).
 
 ## What it shares with RUIN
 Lowest unit prices you saw (when you close the auction house), your recipe names per profession with the item each makes and its quality, and craft requests you post. The treasurer's book goes to their own guild only; crafts go to the customer to confirm, and confirmed crafts to the org.
