@@ -11,6 +11,8 @@ Versioning: the third number counts the meaningful changes made since the second
 - Exchange reads WoW Forever's modern auction house properly. Opening the auction house starts a full scan by itself (the game allows one every 15 minutes), which prices every listing at once instead of only what you searched for. `/ex scan` asks for one; `/ex autoscan` turns the automatic scan off or on.
 - Clicking into an item or a stack of trade goods also records its cheapest price.
 - After a full scan, Exchange shares up to 400 prices with RUIN when you close the auction house, picking the ones RUIN knew least about (new, older than 6 hours, or moved more than 5%), so the guild channel isn't flooded.
+- Prices show as soon as RUIN has them. Leveling prices your saved recipes from current RUIN prices instead of the prices when you last opened the profession, so "needs prices for 1 reagent" and "One craft: 0c" go away once someone has priced the reagents.
+- The Prices list shows the newest 200 of all known prices (with thousands from a full scan it showed a random 200), and asks the game for missing item names a few at a time. While names are still arriving, the summary says how many, since a search can't match them yet.
 
 ## 0.5.1 — 2026-11-06
 

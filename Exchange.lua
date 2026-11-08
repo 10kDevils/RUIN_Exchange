@@ -247,6 +247,27 @@ end
 
 local function price(id) return db.prices[id] and db.prices[id].p end
 
+-- Item names the game hasn't sent yet, asked for a few at a time so a full
+-- scan's thousands of items don't flood the server. Pages redraw as they
+-- arrive (ITEMS_LOADED).
+local NAME_BATCH, NAME_GAP = 20, 0.5
+local wantNames, wantQueue, warming = {}, {}, false
+local function warmNames()
+    local n = 0
+    while n < NAME_BATCH and #wantQueue > 0 do
+        local id = table.remove(wantQueue, 1)
+        wantNames[id] = nil
+        if not R.Items.Info(id) then n = n + 1 end    -- Info asks the game for it
+    end
+    if #wantQueue > 0 then C_Timer.After(NAME_GAP, warmNames) else warming = false end
+end
+function M.WantName(id)
+    if not id or wantNames[id] then return end
+    wantNames[id] = true
+    wantQueue[#wantQueue + 1] = id
+    if not warming and C_Timer then warming = true; C_Timer.After(NAME_GAP, warmNames) end
+end
+
 ---------------------------------------------------------------------------
 -- Crafter directory and profession leveling
 ---------------------------------------------------------------------------
@@ -304,6 +325,27 @@ local function planLeveling(prof, skill, maxSkill, recipes)
         return a.diff < b.diff
     end)
     db.plans[prof] = { skill = skill, max = maxSkill, list = list, t = GetServerTime() }
+end
+
+-- A saved plan priced again from today's RUIN prices: the recipes and your
+-- skill come from the last time the profession window was open, the costs
+-- from whatever prices RUIN has now.
+function M.LivePlan(plan)
+    if not plan then return nil end
+    local list = {}
+    for _, r in ipairs(plan.list or {}) do
+        local cost, missing = craftCost(r.reagents or {})
+        local chance = SKILLUP_CHANCE[r.diff] or 1
+        list[#list + 1] = { name = r.name, diff = r.diff, cost = cost, missing = #missing, perPoint = cost / chance,
+                            reagents = r.reagents }
+        for _, rg in ipairs(r.reagents or {}) do if not R.Items.Info(rg[1]) then M.WantName(rg[1]) end end
+    end
+    table.sort(list, function(a, b)
+        if (a.missing == 0) ~= (b.missing == 0) then return a.missing == 0 end
+        if a.perPoint ~= b.perPoint then return a.perPoint < b.perPoint end
+        return a.diff < b.diff
+    end)
+    return list
 end
 
 -- The item a recipe makes: id and quality from its link (nil for enchants).
@@ -956,18 +998,25 @@ local function search()
         end
         return items
     else
-        local now = GetServerTime()
+        -- every match first, newest first, then the top 200 (a full scan
+        -- brings thousands; stopping early showed a random 200)
+        local now, hits, unnamed = GetServerTime(), {}, 0
         for id, p in pairs(db.prices) do
-            local name, link = R.Items.Info(id)
-            local label = R.Items.Text(id)
+            local name = R.Items.Info(id)
+            if not name then unnamed = unnamed + 1; M.WantName(id) end
             if q == "" or (name and name:lower():find(q, 1, true)) then
-                local _, pct = M:Trend(id)
-                items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r"):format(label, C.gold, W.Money(p.p), trendText(pct), C.dim,
-                    W.Ago(now - (p.t or 0))), t = p.t or 0, link = link }
-                if #items >= 200 then break end
+                hits[#hits + 1] = { id = id, p = p, t = p.t or 0 }
             end
         end
-        table.sort(items, function(a, b) return a.t > b.t end)
+        table.sort(hits, function(a, b) if a.t ~= b.t then return a.t > b.t end return a.id < b.id end)
+        for i = 1, math.min(#hits, 200) do
+            local h = hits[i]
+            local _, link = R.Items.Info(h.id)
+            local _, pct = M:Trend(h.id)
+            items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r"):format(R.Items.Text(h.id), C.gold, W.Money(h.p.p), trendText(pct), C.dim,
+                W.Ago(now - h.t)), t = h.t, link = link }
+        end
+        ui.unnamed = (q ~= "" and unnamed > 0) and unnamed or nil
     end
     return items
 end
@@ -1297,16 +1346,20 @@ local function buildPage(panel)
             ui.summary:SetPoint("RIGHT", ui.tabs.pages[TAB.Search], "RIGHT", ui.mode == "Crafters" and -405 or (#need > 0 and -150 or -6), 0)
             ui.profBtn:Refresh()
             ui.list:SetItems(search())
+            if ui.mode ~= "Crafters" and ui.unnamed then
+                ui.summary:SetText(("%s%d prices known · %d item names still loading, so a search may miss them for a moment.|r")
+                    :format(C.dim, prices, ui.unnamed))
+            end
         elseif tab == TAB.Requests then
             ui.reqList:SetItems(reqs)
         elseif tab == TAB.Leveling then
             if not ui.prof or not db.plans[ui.prof] then ui.prof = next(db.plans) end
             local plan = ui.prof and db.plans[ui.prof]
             ui.profPick:SetText(ui.prof or "No profession yet")
-            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s · worked out %s from RUIN prices. Orange always gives a point, yellow usually, green sometimes.")
+            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s (as of %s) · costs from current RUIN prices. Orange always gives a point, yellow usually, green sometimes.")
                 :format(ui.prof, tostring(plan.skill or "?"), tostring(plan.max or "?"), W.Ago(GetServerTime() - plan.t)) .. "|r") or "")
             local list = {}
-            for i, r in ipairs(plan and plan.list or {}) do if i <= 25 then list[i] = r end end
+            for i, r in ipairs(M.LivePlan(plan) or {}) do if i <= 25 then list[i] = r end end
             ui.levelList:SetItems(list)
         elseif tab == TAB.Treasury then
             ns.Treasury.Refresh()
