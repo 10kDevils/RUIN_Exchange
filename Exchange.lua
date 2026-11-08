@@ -1,5 +1,6 @@
 -- RUIN Exchange
--- Prices you see while browsing the auction house are shared with RUIN
+-- Auction prices (a full scan when the auction house opens, plus what you
+-- browse) are shared with RUIN
 -- when you close it, so everyone has fresh prices without scanning; a daily
 -- history gives each price a 7-day trend. Opening a profession window
 -- shares your recipes ("who in RUIN can craft this") and works out the
@@ -16,7 +17,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.5.1" })
+local M = R:RegisterModule("Exchange", { version = "0.5.2" })
 
 local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -100,6 +101,116 @@ local function onBrowse()
     for _, r in ipairs(C_AuctionHouse.GetBrowseResults() or {}) do
         if r.itemKey then notePrice(r.itemKey.itemID, r.minPrice) end
     end
+end
+
+-- Clicking into an item: the cheapest listings of a commodity or of one item
+local function onCommodity(_, itemID)
+    local AH = C_AuctionHouse
+    if not (AH and AH.GetCommoditySearchResultInfo and itemID) then return end
+    local r = AH.GetCommoditySearchResultInfo(itemID, 1)        -- results come cheapest first
+    if r and r.unitPrice then notePrice(itemID, r.unitPrice) end
+end
+
+local function onItemSearch(_, itemKey)
+    local AH = C_AuctionHouse
+    if not (AH and AH.GetNumItemSearchResults and type(itemKey) == "table") then return end
+    local best
+    for i = 1, math.min(AH.GetNumItemSearchResults(itemKey) or 0, 50) do
+        local r = AH.GetItemSearchResultInfo(itemKey, i)
+        local each = r and r.buyoutAmount and r.quantity and r.quantity > 0 and r.buyoutAmount / r.quantity
+        if each and each > 0 and (not best or each < best) then best = each end
+    end
+    if best then notePrice(itemKey.itemID, best) end
+end
+
+-- Full scan: the whole auction house at once (the game allows one every
+-- 15 minutes). It runs by itself when you open the auction house and the
+-- last one is old enough; `/ex scan` asks for one.
+local FULL_SCAN_GAP = 15 * 60
+local SCAN_CHUNK = 1500
+local SHARE_AGE = 6 * 3600      -- after a full scan, share prices older than this...
+local SHARE_MOVE = 0.05         -- ...or that moved more than 5%
+local SHARE_MAX = 400           -- at most this many per scan (10 messages)
+local scanning, ahOpen
+
+local function finishFullScan(found)
+    local now, n, picks = GetServerTime(), 0, {}
+    for id, p in pairs(found) do
+        n = n + 1
+        local prev = db.prices[id]
+        local move = prev and prev.p and prev.p > 0 and math.abs(p - prev.p) / prev.p or math.huge
+        local age = prev and (now - (prev.t or 0)) or math.huge
+        if move > SHARE_MOVE or age > SHARE_AGE then
+            picks[#picks + 1] = { id = id, p = p, score = move == math.huge and math.huge or move + age / SHARE_AGE }
+        end
+        db.prices[id] = { p = p, t = now, by = UnitName("player") }
+        noteHistory(id, p, now)
+    end
+    -- the send queue manages about one message a second, so share the
+    -- prices RUIN knows least about and leave the rest for the next scan
+    table.sort(picks, function(a, b) return a.score > b.score end)
+    local shared = math.min(#picks, SHARE_MAX)
+    for k = 1, shared do
+        local e = picks[k]
+        if not session[e.id] or e.p < session[e.id] then session[e.id] = e.p end
+    end
+    db.lastFullScan = now
+    scanning = nil
+    M:Print(("Full scan done: %d prices read (%d new or changed will be shared when you close the auction house)."):format(n, shared))
+    refreshPage()
+end
+
+local function readReplicate()
+    local AH = C_AuctionHouse
+    if not scanning or not (AH and AH.GetNumReplicateItems and AH.GetReplicateItemInfo) then return end
+    scanning.total = AH.GetNumReplicateItems() or 0
+    if scanning.reading then return end
+    scanning.reading = true
+    local found, i = {}, 0
+    local function step()
+        if not scanning then return end
+        local stop = math.min(i + SCAN_CHUNK, scanning.total)
+        while i < stop do
+            -- index 0 based; count is the 3rd value, buyout the 10th, item id the 17th
+            local _, _, count, _, _, _, _, _, _, buyout, _, _, _, _, _, _, id = AH.GetReplicateItemInfo(i)
+            i = i + 1
+            if id and buyout and buyout > 0 and count and count > 0 then
+                local each = math.floor(buyout / count)
+                if not found[id] or each < found[id] then found[id] = each end
+            end
+        end
+        if i < scanning.total then C_Timer.After(0, step) else finishFullScan(found) end
+    end
+    step()
+end
+
+function M.FullScan(quiet)
+    local AH = C_AuctionHouse
+    if not (AH and AH.ReplicateItems) then
+        if not quiet then M:Print("This client has no full auction house scan.") end
+        return false
+    end
+    if scanning then return false end
+    local wait = (db.lastFullScan or 0) + FULL_SCAN_GAP - GetServerTime()
+    if wait > 0 then
+        if not quiet then M:Print(("The game allows one full scan every 15 minutes; next in %d min."):format(math.ceil(wait / 60))) end
+        return false
+    end
+    if not ahOpen then
+        if not quiet then M:Print("Open the auction house first.") end
+        return false
+    end
+    scanning = { started = GetServerTime() }
+    M:Print("Scanning the whole auction house...")
+    AH.ReplicateItems()
+    -- some clients only answer through the event; read it in a moment anyway
+    C_Timer.After(5, function() if scanning and not scanning.reading then readReplicate() end end)
+    return true
+end
+
+local function onAuctionShow()
+    ahOpen = true
+    if db.autoScan ~= false then C_Timer.After(1, function() M.FullScan(true) end) end
 end
 
 local function shareSession()
@@ -1256,7 +1367,11 @@ function M:OnEnable()
     self:RegisterEvent("AUCTION_ITEM_LIST_UPDATE", onClassicList)
     self:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", onBrowse)
     self:RegisterEvent("AUCTION_HOUSE_BROWSE_RESULTS_ADDED", onBrowse)
-    self:RegisterEvent("AUCTION_HOUSE_CLOSED", shareSession)
+    self:RegisterEvent("COMMODITY_SEARCH_RESULTS_UPDATED", onCommodity)
+    self:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED", onItemSearch)
+    self:RegisterEvent("REPLICATE_ITEM_LIST_UPDATE", readReplicate)
+    self:RegisterEvent("AUCTION_HOUSE_SHOW", onAuctionShow)
+    self:RegisterEvent("AUCTION_HOUSE_CLOSED", function() scanning, ahOpen = nil, nil; shareSession() end)
     R:Subscribe("ITEMS_LOADED", function() refreshPage() end)
     self:RegisterEvent("TRADE_SKILL_SHOW", function() craftWindow = false; scheduleCraftScan() end)
     self:RegisterEvent("TRADE_SKILL_LIST_UPDATE", function() craftWindow = false; scheduleCraftScan() end)
@@ -1282,7 +1397,7 @@ function RUIN_Exchange_Open() M:OpenTab() end
 BINDING_HEADER_RUIN_EXCHANGE = "RUIN Exchange"
 BINDING_NAME_RUIN_EXCHANGE_OPEN = "Open Exchange"
 
--- /ex [search] | /ex request <item> [-- note] | /ex bags | treasury | history
+-- /ex [search] | /ex request <item> [-- note] | /ex bags | treasury | history | scan | autoscan
 SLASH_RUINEXCHANGE1 = "/ex"
 SLASH_RUINEXCHANGE2 = "/exchange"
 SlashCmdList.RUINEXCHANGE = function(msg)
@@ -1291,6 +1406,14 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     if cmd:lower() == "request" then
         local item, note = rest:match("^(.-)%s*%-%-%s*(.*)$")
         M:Request(item or rest, note)
+        return
+    end
+    if cmd:lower() == "scan" then
+        M.FullScan(false)
+        return
+    elseif cmd:lower() == "autoscan" then
+        db.autoScan = db.autoScan == false
+        M:Print("Full scan when you open the auction house: " .. (db.autoScan and "on" or "off"))
         return
     end
     M:OpenTab()
