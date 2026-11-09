@@ -1437,7 +1437,10 @@ local function parseReagents(text)
     for part in text:gmatch("[^,]+") do
         part = part:gsub("^%s+", ""):gsub("%s+$", "")
         local item, count = part:match("^(.-)%s*%((%d+)%)$")
-        local id = R.Items.IdByName and R.Items.IdByName(item or part)
+        local nm = item or part
+        local id = R.Items.IdByName and R.Items.IdByName(nm)
+        -- the game knows items it has loaded by name too
+        if not id and GetItemInfoInstant then id = tonumber((GetItemInfoInstant(nm))) end
         if not id then return nil end
         out[#out + 1] = { id, tonumber(count) or 1 }
     end
@@ -1477,6 +1480,10 @@ function M.RecipeLines(itemName, texts)
                 lines[#lines + 1] = C.dim .. "Grey at your skill: no skill points.|r"
             elseif pt then
                 lines[#lines + 1] = ("%sPrice per Point at your skill: %s"):format(C.gold, pt)
+            else
+                -- RUIN hasn't seen what color it is at your skill: give each
+                lines[#lines + 1] = ("%sPrice per Point:|r %s%s|r orange, %s~%s|r yellow, %s~%s|r green"):format(C.gold,
+                    C.gold, M.ShortMoney(cost), C.gold, M.ShortMoney(cost / SKILLUP_CHANCE[1]), C.gold, M.ShortMoney(cost / SKILLUP_CHANCE[2]))
             end
         end
     end
@@ -1496,7 +1503,10 @@ local function onTooltip(tooltip)
     if ok and lines then for _, l in ipairs(lines) do tooltip:AddLine(l) end end
     local id = tonumber(tostring(link):match("item:(%d+)"))
     local name, _, _, _, class = itemInfo(id)
-    if name and (class == "Recipe" or (GetItemInfoInstant and select(6, GetItemInfoInstant(id)) == 9)) then
+    local isRecipe = name and (class == "Recipe" or (GetItemInfoInstant and select(6, GetItemInfoInstant(id)) == 9)
+        or name:match("^Recipe:") or name:match("^Pattern:") or name:match("^Formula:") or name:match("^Plans:")
+        or name:match("^Schematic:") or name:match("^Manual:"))
+    if isRecipe then
         local ok2, extra = pcall(M.RecipeLines, name, tooltipTexts(tooltip))
         if ok2 and extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
     end
