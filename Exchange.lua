@@ -37,8 +37,9 @@ local function dayKey(t) return math.floor((t or GetServerTime()) / 86400) end
 
 local function itemInfo(id)
     if not GetItemInfo then return nil end
+    if R.Items.IsCached and not R.Items.IsCached(tonumber(id) or id) then R.Items.Request(tonumber(id) or id); return nil end
     local name, link, quality, _, _, class, _, _, equip, _, sell = GetItemInfo(id)
-    if not name and C_Item and C_Item.RequestLoadItemDataByID then pcall(C_Item.RequestLoadItemDataByID, id) end
+    if not name then R.Items.Request(tonumber(id) or id) end
     return name, link, quality, sell, class, equip
 end
 
@@ -252,7 +253,7 @@ local function price(id) return db.prices[id] and db.prices[id].p end
 -- Item names the game hasn't sent yet, asked for a few at a time so a full
 -- scan's thousands of items don't flood the server. Pages redraw as they
 -- arrive (ITEMS_LOADED).
-local NAME_BATCH, NAME_GAP = 20, 0.5
+local NAME_BATCH, NAME_GAP = 8, 0.5
 local wantNames, wantQueue, warming = {}, {}, false
 local function warmNames()
     local n = 0

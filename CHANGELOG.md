@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.5.2 — 2026-11-08
 
+- Item names are asked for through RUIN Core's queue, a few at a time.
 - Exchange reads WoW Forever's modern auction house properly. Opening the auction house starts a full scan by itself (the game allows one every 15 minutes), which prices every listing at once instead of only what you searched for. `/ex scan` asks for one; `/ex autoscan` turns the automatic scan off or on.
 - Clicking into an item or a stack of trade goods also records its cheapest price.
 - After a full scan, Exchange shares up to 400 prices with RUIN when you close the auction house, picking the ones RUIN knew least about (new, older than 6 hours, or moved more than 5%), so the guild channel isn't flooded.
