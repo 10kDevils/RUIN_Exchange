@@ -19,7 +19,7 @@ local C = W.COLORS
 
 local M = R:RegisterModule("Exchange", { version = "0.5.2" })
 
-local DEFAULTS = { prices = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
+local DEFAULTS = { prices = {}, vendor = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
 local HISTORY_DAYS = 14
 local REQUEST_HOURS = 24
@@ -250,6 +250,93 @@ end
 
 local function price(id) return db.prices[id] and db.prices[id].p end
 
+---------------------------------------------------------------------------
+-- Vendor prices: what a merchant sells an item for, seen when you open one
+-- and shared with RUIN. A vendor price counts only when it's cheaper than
+-- the auction house (or the auction house has none), and every place that
+-- uses it says so.
+---------------------------------------------------------------------------
+local VENDOR_SHARE_MAX = 200
+local vendorSeen = {}          -- this visit: id -> price, to share on close
+
+-- the cheapest way to buy one: price, "vendor" or nil, and the vendor's name
+local function buyPrice(id)
+    local ah = price(id)
+    local v = db.vendor and db.vendor[id]
+    if v and v.p and (not ah or v.p < ah) then return v.p, "vendor", v.by end
+    return ah, nil, nil
+end
+M.BuyPrice = function(id) id = tonumber(id); if id then return buyPrice(id) end end
+
+-- "12s" or "5c (vendor)" for lists and tooltips
+local function buyText(id, count)
+    local p, src = buyPrice(id)
+    if not p then return nil end
+    return W.Money(p * (count or 1)) .. (src == "vendor" and (" " .. C.good .. "(vendor)|r") or "")
+end
+
+local function noteVendor(id, p, by, t)
+    if not (id and p and p > 0 and p < 1e11) then return false end
+    local cur = db.vendor[id]
+    if cur and cur.p and cur.p <= p then return false end    -- keep the cheapest (reputation discounts vary)
+    db.vendor[id] = { p = p, by = by, t = t or GetServerTime() }
+    return true
+end
+
+local function merchantItem(i)
+    local CM = rawget(_G, "C_MerchantFrame")
+    local id = GetMerchantItemID and GetMerchantItemID(i)
+    if CM and CM.GetItemInfo then
+        local info = CM.GetItemInfo(i)
+        if type(info) == "table" then
+            return id, info.price, info.stackCount, info.numAvailable, info.hasExtendedCost
+        end
+    end
+    if GetMerchantItemInfo then
+        local _, _, cost, quantity, available, _, _, extended = GetMerchantItemInfo(i)
+        return id, cost, quantity, available, extended
+    end
+end
+
+function M.ScanMerchant()
+    if not (GetMerchantNumItems and GetMerchantItemID) then return 0 end
+    local who = UnitName and UnitName("npc") or "a vendor"
+    local n = 0
+    for i = 1, GetMerchantNumItems() or 0 do
+        local id, cost, quantity, available, extended = merchantItem(i)
+        -- gold only, and only stock that doesn't run out
+        if id and cost and cost > 0 and not extended and (available == nil or available < 0) then
+            local each = cost / math.max(quantity or 1, 1)
+            if noteVendor(id, each, who) then vendorSeen[id] = each end
+            n = n + 1
+        end
+    end
+    if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
+    return n
+end
+
+local function shareVendor()
+    local flat, n = {}, 0
+    local who = UnitName and UnitName("npc")
+    for id, p in pairs(vendorSeen) do
+        flat[#flat + 1] = id; flat[#flat + 1] = math.floor(p * 100 + 0.5) / 100
+        n = n + 1
+        if n >= VENDOR_SHARE_MAX then break end
+    end
+    vendorSeen = {}
+    if n > 0 then M:Send("VPRICES", { l = flat, w = db.lastVendor or who }, "ORG", nil, R.PRIORITY.BULK) end
+end
+
+function M:OnVendorPrices(d, sender)
+    if type(d.l) ~= "table" then return end
+    local who = type(d.w) == "string" and d.w:sub(1, 40) or ("a vendor (" .. tostring(sender) .. ")")
+    for i = 1, math.min(#d.l, VENDOR_SHARE_MAX * 2) - 1, 2 do
+        local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
+        if id and id > 0 and id == math.floor(id) then noteVendor(id, p, who) end
+    end
+    if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
+end
+
 -- Item names the game hasn't sent yet, asked for a few at a time so a full
 -- scan's thousands of items don't flood the server. Pages redraw as they
 -- arrive (ITEMS_LOADED).
@@ -306,7 +393,7 @@ end
 local function craftCost(reagents)
     local cost, missing = 0, {}
     for _, r in ipairs(reagents) do
-        local p = price(r[1])
+        local p = buyPrice(r[1])
         if p then cost = cost + p * r[2] else missing[#missing + 1] = r[1] end
     end
     return cost, missing
@@ -1003,8 +1090,13 @@ local function priceLines(link)
     local p = db.prices[id]
     local _, _, _, vendor = itemInfo(id)
     local lines = {}
+    local vp, src, by = buyPrice(id)
+    if src == "vendor" then
+        lines[#lines + 1] = ("%sVendor: %s|r %sfrom %s%s|r"):format(C.good, W.Money(vp), C.dim, tostring(by),
+            p and (", cheaper than the AH (" .. W.Money(p.p) .. ")") or "")
+    end
     if p then
-        lines[1] = ("%sRUIN price: %s|r %s%s|r"):format(C.gold, W.Money(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
+        lines[#lines + 1] = ("%sRUIN price: %s|r %s%s|r"):format(C.gold, W.Money(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
         local avg, pct, days = M:Trend(id)
         if avg and days >= 2 then
             lines[#lines + 1] = ("%sRUIN 7-day: avg %s  %s|r"):format(C.dim, W.Money(avg), trendText(pct))
@@ -1170,8 +1262,10 @@ local function search()
             local h = hits[i]
             local _, link = R.Items.Info(h.id)
             local _, pct = M:Trend(h.id)
-            items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r"):format(R.Items.Text(h.id), C.gold, W.Money(h.p.p), trendText(pct), C.dim,
-                W.Ago(now - h.t)), t = h.t, link = link }
+            local vp, src, by = buyPrice(h.id)
+            local vend = src == "vendor" and ("  " .. C.good .. W.Money(vp) .. " at a vendor (" .. tostring(by) .. ")|r") or ""
+            items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r%s"):format(R.Items.Text(h.id), C.gold, W.Money(h.p.p), trendText(pct), C.dim,
+                W.Ago(now - h.t), vend), t = h.t, link = link }
         end
         ui.unnamed = (q ~= "" and unnamed > 0) and unnamed or nil
     end
@@ -1424,8 +1518,9 @@ local function buildLeveling(page)
             tip:AddLine(r.name, 1, 0.82, 0)
             tip:AddLine(("One craft: %s from RUIN prices"):format(W.Money(r.cost)), 1, 1, 1)
             for _, rg in ipairs(r.reagents or {}) do
-                local p = price(rg[1])
-                tip:AddLine(("%d x %s  %s"):format(rg[2], R.Items.Text(rg[1]), p and W.Money(p * rg[2]) or "no price"), 0.8, 0.8, 0.8)
+                local _, src, by = buyPrice(rg[1])
+                tip:AddLine(("%d x %s  %s"):format(rg[2], R.Items.Text(rg[1]), buyText(rg[1], rg[2]) or "no price"), 0.8, 0.8, 0.8)
+                if src == "vendor" then tip:AddLine("    from " .. tostring(by) .. ", cheaper than the auction house", 0.5, 0.8, 0.5) end
             end
         end
     end)
@@ -1547,6 +1642,7 @@ function M:OnEnable()
     for k, v in pairs(DEFAULTS) do if db[k] == nil then db[k] = v end end
 
     self:Listen("PRICES", "OnPrices")
+    self:Listen("VPRICES", "OnVendorPrices")
     self:Listen("CRAFTS", "OnCrafts")
     self:Listen("REQ", "OnRequest")
     self:Listen("REQDEL", "OnRequestDelete")
@@ -1581,6 +1677,9 @@ function M:OnEnable()
     self:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED", onItemSearch)
     self:RegisterEvent("REPLICATE_ITEM_LIST_UPDATE", readReplicate)
     self:RegisterEvent("AUCTION_HOUSE_SHOW", onAuctionShow)
+    self:RegisterEvent("MERCHANT_SHOW", function() db.lastVendor = UnitName and UnitName("npc"); C_Timer.After(0.5, M.ScanMerchant) end)
+    self:RegisterEvent("MERCHANT_UPDATE", function() C_Timer.After(0.2, M.ScanMerchant) end)
+    self:RegisterEvent("MERCHANT_CLOSED", shareVendor)
     self:RegisterEvent("AUCTION_HOUSE_CLOSED", function() scanning, ahOpen = nil, nil; shareSession() end)
     R:Subscribe("ITEMS_LOADED", function() refreshPage() end)
     self:RegisterEvent("TRADE_SKILL_SHOW", function() craftWindow = false; scheduleCraftScan(); C_Timer.After(0, M.HookRecipeCosts) end)
