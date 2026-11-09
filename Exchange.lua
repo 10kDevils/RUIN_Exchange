@@ -792,19 +792,25 @@ local function paintCost(row, text, right)
     fs:SetPoint("RIGHT", row, "RIGHT", right or -4, 0)
     fs:SetText(shown and text or "")
     if shown then fs:Show() else fs:Hide() end
-    -- the name ends where the cost starts, so a long name is cut short
-    -- ("Enchant Chest - Minor Abso...") instead of running under it
+    -- the name (and the "[2]" craftable count after it) end before the cost,
+    -- so a long name is cut short ("Enchant Chest - Minor Abso...") instead
+    -- of running under it
     local name = nameText(row)
-    if name and name.SetPoint and name.GetPoint then
-        local point, rel, relPoint, x, y = name:GetPoint(1)
-        if point then
-            name:ClearAllPoints()
-            name:SetPoint(point, rel, relPoint, x, y)
-            if shown then
-                name:SetPoint("RIGHT", fs, "LEFT", -6, 0)
-            end
-            if name.SetWordWrap then name:SetWordWrap(false) end
-        end
+    if not (shown and name and name.SetWidth and name.GetStringWidth) then return end
+    local count = rawget(row, "Count")
+    local countW = (type(count) == "table" and count.IsShown and count:IsShown() and count.GetStringWidth and (count:GetStringWidth() or 0) + 6) or 0
+    local avail
+    local fl, nl = fs.GetLeft and fs:GetLeft(), name.GetLeft and name:GetLeft()
+    if fl and nl then
+        avail = fl - nl - countW - 8
+    else
+        local _, _, _, x = name:GetPoint(1)
+        avail = (row:GetWidth() or 0) - (tonumber(x) or 0) - (fs:GetStringWidth() or 0) - math.abs(right or 4) - countW - 8
+    end
+    local want = (name.GetUnboundedStringWidth and name:GetUnboundedStringWidth()) or name:GetStringWidth() or 0
+    if avail and avail > 20 then
+        if name.SetWordWrap then name:SetWordWrap(false) end
+        name:SetWidth(math.min(want + 2, avail))
     end
 end
 
