@@ -19,7 +19,7 @@ local C = W.COLORS
 
 local M = R:RegisterModule("Exchange", { version = "0.5.2" })
 
-local DEFAULTS = { prices = {}, vendor = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
+local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
 local HISTORY_DAYS = 14
 local REQUEST_HOURS = 24
@@ -399,15 +399,125 @@ local function craftCost(reagents)
     return cost, missing
 end
 
+---------------------------------------------------------------------------
+-- Skill-up chance. A recipe has four skill levels where its color changes:
+-- orange from the skill you learn it at, then yellow, green, and grey. Orange
+-- always gives a point and grey never does; between yellow and grey the
+-- chance falls in a straight line from 100% to nothing:
+--     chance = (grey - your skill) / (grey - yellow)
+-- (the Classic rule the WoW Forever leveling calculators use). The game
+-- only tells you a recipe's color, not where the colors change, so RUIN
+-- learns those levels from what everyone in the org sees: the highest skill
+-- anyone saw a recipe orange at, and the lowest they saw it yellow, green or
+-- grey at. Until it knows yellow and grey for a recipe it assumes 3 in 4 for
+-- yellow and 1 in 4 for green.
+---------------------------------------------------------------------------
+local RSKILL_SHARE_MAX = 40
+local rskillChanged = {}       -- prof -> { name = true } since the last share
+
+local function thresholds(prof, name)
+    local p = prof and db.rskill[prof]
+    return p and p[name]
+end
+
+-- remember the color a recipe showed at a skill level
+local function noteColor(prof, name, diff, skill)
+    skill = tonumber(skill)
+    if not (prof and name and diff and skill and skill > 0 and skill < 1000) then return false end
+    db.rskill[prof] = db.rskill[prof] or {}
+    local t = db.rskill[prof][name] or {}
+    local before = (t.o or -1) .. ":" .. (t.y or -1) .. ":" .. (t.g or -1) .. ":" .. (t.x or -1)
+    if diff == 0 then t.o = math.max(t.o or 0, skill)
+    elseif diff == 1 then t.y = math.min(t.y or 9999, skill)
+    elseif diff == 2 then t.g = math.min(t.g or 9999, skill)
+    elseif diff == 3 then t.x = math.min(t.x or 9999, skill) end
+    -- a green or grey level also puts yellow below it
+    if t.g and t.y and t.y > t.g then t.y = t.g end
+    db.rskill[prof][name] = t
+    local after = (t.o or -1) .. ":" .. (t.y or -1) .. ":" .. (t.g or -1) .. ":" .. (t.x or -1)
+    if before ~= after then
+        rskillChanged[prof] = rskillChanged[prof] or {}
+        rskillChanged[prof][name] = true
+        return true
+    end
+    return false
+end
+M.NoteColor = noteColor
+
+-- chance of a point, and whether it's worked out from known color levels
+local function chanceFor(prof, name, diff, skill)
+    if diff == 0 then return 1, true end
+    if diff == 3 or diff == nil then return 0, true end
+    local t = thresholds(prof, name)
+    skill = tonumber(skill)
+    local yellow = t and (t.y or (t.o and t.o + 1))
+    local grey = t and t.x
+    if skill and yellow and grey and grey > yellow then
+        local c = (grey - skill) / (grey - yellow)
+        if c > 0 and c <= 1 then return c, true end
+        if c > 1 then return 1, true end
+    end
+    return SKILLUP_CHANCE[diff], false
+end
+M.ChanceFor = chanceFor
+
+-- the color an unlearned recipe would show at your skill, from the levels
+-- the org has seen; nil when RUIN doesn't know enough yet
+local function predictDiff(prof, name, skill)
+    local t = thresholds(prof, name)
+    skill = tonumber(skill)
+    if not (t and skill) then return nil end
+    if t.x and skill >= t.x then return 3 end
+    if t.g and skill >= t.g then return 2 end
+    if t.y and skill >= t.y then return 1 end
+    if t.o and skill <= t.o then return 0 end
+    if t.y and skill < t.y and t.o and skill > t.o then return 0 end
+    return nil
+end
+M.PredictDiff = predictDiff
+
+function M.ShareRecipeSkill()
+    for prof, names in pairs(rskillChanged) do
+        local flat, n = {}, 0
+        for name in pairs(names) do
+            local t = thresholds(prof, name)
+            if t then
+                flat[#flat + 1] = name
+                flat[#flat + 1] = t.o or 0; flat[#flat + 1] = t.y or 0; flat[#flat + 1] = t.g or 0; flat[#flat + 1] = t.x or 0
+                n = n + 1
+                if n >= RSKILL_SHARE_MAX then break end
+            end
+        end
+        if n > 0 then M:Send("RSKILL", { p = prof, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
+    end
+    rskillChanged = {}
+end
+
+function M:OnRecipeSkill(d)
+    if type(d.p) ~= "string" or #d.p > 40 or type(d.l) ~= "table" then return end
+    for i = 1, math.min(#d.l, RSKILL_SHARE_MAX * 5) - 4, 5 do
+        local name = d.l[i]
+        if type(name) == "string" and #name > 0 and #name <= 80 then
+            local o, y, g, x = tonumber(d.l[i + 1]), tonumber(d.l[i + 2]), tonumber(d.l[i + 3]), tonumber(d.l[i + 4])
+            if o and o > 0 then noteColor(d.p, name, 0, o) end
+            if y and y > 0 then noteColor(d.p, name, 1, y) end
+            if g and g > 0 then noteColor(d.p, name, 2, g) end
+            if x and x > 0 then noteColor(d.p, name, 3, x) end
+        end
+    end
+    rskillChanged[d.p] = nil      -- heard from someone else: no need to pass it on
+    if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
+end
+
 -- Rank recipes that can still raise your skill by expected cost per point.
 local function planLeveling(prof, skill, maxSkill, recipes)
     local list = {}
     for _, r in ipairs(recipes) do
-        local chance = SKILLUP_CHANCE[r.diff]
-        if chance then
+        local chance, exact = chanceFor(prof, r.name, r.diff, skill)
+        if chance and chance > 0 then
             local cost, missing = craftCost(r.reagents)
             list[#list + 1] = { name = r.name, diff = r.diff, cost = cost, missing = #missing, perPoint = cost / chance,
-                                reagents = r.reagents }
+                                reagents = r.reagents, chance = chance, exact = exact, unlearned = r.unlearned }
         end
     end
     table.sort(list, function(a, b)
@@ -415,7 +525,7 @@ local function planLeveling(prof, skill, maxSkill, recipes)
         if a.perPoint ~= b.perPoint then return a.perPoint < b.perPoint end
         return a.diff < b.diff
     end)
-    db.plans[prof] = { skill = skill, max = maxSkill, list = list, t = GetServerTime() }
+    db.plans[prof] = { prof = prof, skill = skill, max = maxSkill, list = list, t = GetServerTime() }
 end
 
 -- A saved plan priced again from today's RUIN prices: the recipes and your
@@ -426,9 +536,10 @@ function M.LivePlan(plan)
     local list = {}
     for _, r in ipairs(plan.list or {}) do
         local cost, missing = craftCost(r.reagents or {})
-        local chance = SKILLUP_CHANCE[r.diff] or 1
+        local chance, exact = chanceFor(plan.prof, r.name, r.diff, plan.skill)
+        if not chance or chance <= 0 then chance = SKILLUP_CHANCE[r.diff] or 1 end
         list[#list + 1] = { name = r.name, diff = r.diff, cost = cost, missing = #missing, perPoint = cost / chance,
-                            reagents = r.reagents }
+                            reagents = r.reagents, chance = chance, exact = exact, unlearned = r.unlearned }
         for _, rg in ipairs(r.reagents or {}) do if not R.Items.Info(rg[1]) then M.WantName(rg[1]) end end
     end
     table.sort(list, function(a, b)
@@ -484,6 +595,7 @@ local function scanCrafts()
             local name, _, kind = GetCraftInfo(i)
             if name and kind ~= "header" then
                 list[#list + 1] = name
+                if CLASSIC_DIFFICULTY[kind] then noteColor(prof, name, CLASSIC_DIFFICULTY[kind], skill) end
                 local iid, q = madeItem(GetCraftItemLink and GetCraftItemLink(i))
                 if iid then made[name] = { iid, q } end
             end
@@ -498,8 +610,15 @@ local function scanCrafts()
                 list[#list + 1] = r.name
                 local iid, q = madeItem(recipeLinkModern(id))
                 if iid then made[r.name] = { iid, q } end
+                if r.relativeDifficulty then noteColor(prof, r.name, r.relativeDifficulty, skill) end
                 if r.relativeDifficulty and r.relativeDifficulty < 3 then
                     recipes[#recipes + 1] = { name = r.name, diff = r.relativeDifficulty, reagents = reagentsModern(id) }
+                end
+            elseif r and r.name and not r.learned then
+                -- not learned yet: worth training if it would give points at your skill
+                local diff = predictDiff(prof, r.name, skill)
+                if diff and diff < 3 then
+                    recipes[#recipes + 1] = { name = r.name, diff = diff, reagents = reagentsModern(id), unlearned = true }
                 end
             end
         end
@@ -514,6 +633,7 @@ local function scanCrafts()
                 local iid, q = madeItem(GetTradeSkillItemLink and GetTradeSkillItemLink(i))
                 if iid then made[name] = { iid, q } end
                 local diff = CLASSIC_DIFFICULTY[kind]
+                if diff then noteColor(prof, name, diff, skill) end
                 if diff and diff < 3 then recipes[#recipes + 1] = { name = name, diff = diff, reagents = reagentsClassic(i) } end
             end
         end
@@ -521,6 +641,7 @@ local function scanCrafts()
     if not prof or prof == "" or #list == 0 then return end
     closeScannedWindow()
     if #recipes > 0 then planLeveling(prof, skill, maxSkill, recipes) end
+    M.ShareRecipeSkill()
     table.sort(list)
     local me = R:GetPlayer()
     -- the made item's id and quality travel beside the names (i, q), so
@@ -558,9 +679,10 @@ local function scheduleCraftScan()
 end
 
 ---------------------------------------------------------------------------
--- Price per Craft beside each recipe in the profession window, from current
--- RUIN prices: what one craft's reagents cost, for every recipe listed,
--- learned or not. A recipe with an unpriced reagent shows "?".
+-- Price per Point beside each recipe in the profession window, from current
+-- RUIN prices: one craft's reagents divided by the chance it gives a skill
+-- point (see the skill-up chance notes above), for every recipe listed,
+-- learned or not.
 ---------------------------------------------------------------------------
 local function reagentsCraft(index)
     local out = {}
@@ -574,25 +696,6 @@ local function reagentsCraft(index)
     return out
 end
 
--- Price per Craft beside each recipe: what one craft's reagents cost at the
--- cheapest RUIN price (vendor or auction house), learned or not, any color.
--- "1s 20c/craft", "?/craft" when a reagent has no price, nil with no reagents.
-function M.CraftText(reagents)
-    if not reagents or #reagents == 0 then return nil end
-    local cost, missing = craftCost(reagents)
-    if #missing > 0 then return C.dim .. "?/craft|r" end
-    return C.gold .. M.ShortMoney(cost) .. "|r" .. C.dim .. "/craft|r"
-end
-
--- per skill point (the Leveling page): "1s 20c/pt", "?/pt" or nil for grey
-function M.PointText(diff, reagents)
-    local chance = SKILLUP_CHANCE[diff]
-    if not chance or not reagents or #reagents == 0 then return nil end
-    local cost, missing = craftCost(reagents)
-    if #missing > 0 then return C.dim .. "?/pt|r" end
-    return C.gold .. M.ShortMoney(cost / chance) .. "|r" .. C.dim .. "/pt|r"
-end
-
 -- short money for tight spots: "36c", "18s", "1g 20s" (copper dropped once
 -- there's silver, silver dropped from 10 gold up)
 function M.ShortMoney(copper)
@@ -602,6 +705,51 @@ function M.ShortMoney(copper)
     if g > 0 then return s > 0 and (g .. "g " .. s .. "s") or (g .. "g") end
     if s > 0 then return s .. "s" end
     return c .. "c"
+end
+
+-- One craft's reagents at the cheapest RUIN price: "1s 20c/craft", "?/craft"
+function M.CraftText(reagents)
+    if not reagents or #reagents == 0 then return nil end
+    local cost, missing = craftCost(reagents)
+    if #missing > 0 then return C.dim .. "?/craft|r" end
+    return C.gold .. M.ShortMoney(cost) .. "|r" .. C.dim .. "/craft|r"
+end
+
+-- Price per Point: one craft divided by the chance of a skill point.
+-- "1s 20c/pt" when the chance is worked out from the recipe's color levels,
+-- "~1s 20c/pt" when it's the 3-in-4 / 1-in-4 guess, "?/pt" when a reagent
+-- has no price, "grey" for no points, and "18s/craft" when RUIN can't tell
+-- what color an unlearned recipe would be.
+function M.PointText(diff, reagents, prof, name, skill)
+    if not reagents or #reagents == 0 then return nil end
+    if diff == nil then return M.CraftText(reagents) end
+    if diff == 3 then return C.dim .. "grey|r" end
+    local chance, exact = chanceFor(prof, name, diff, skill)
+    if not chance or chance <= 0 then return C.dim .. "grey|r" end
+    local cost, missing = craftCost(reagents)
+    if #missing > 0 then return C.dim .. "?/pt|r" end
+    return C.gold .. (exact and "" or "~") .. M.ShortMoney(cost / chance) .. "|r" .. C.dim .. "/pt|r"
+end
+
+-- the open profession and your skill in it
+function M.CurrentProfession(craft)
+    if craft and GetCraftDisplaySkillLine then
+        local prof, rank = GetCraftDisplaySkillLine()
+        return prof, rank
+    end
+    if C_TradeSkillUI and C_TradeSkillUI.GetBaseProfessionInfo then
+        local info = C_TradeSkillUI.GetBaseProfessionInfo()
+        if info and info.professionName then return info.professionName, info.skillLevel end
+    end
+    if GetTradeSkillLine then
+        local prof, rank = GetTradeSkillLine()
+        return prof, rank
+    end
+end
+
+local function pointFor(diff, reagents, name, craft)
+    local prof, skill = M.CurrentProfession(craft)
+    return M.PointText(diff, reagents, prof, name, skill)
 end
 
 local function costLabel(row)
@@ -652,7 +800,10 @@ local function paintModernRow(frame)
         if frame and frame.ruinCost then frame.ruinCost:Hide() end
         return
     end
-    local text = M.CraftText(reagentsModern(info.recipeID))
+    local prof, skill = M.CurrentProfession()
+    local diff = info.relativeDifficulty
+    if not info.learned and diff == nil then diff = predictDiff(prof, info.name, skill) end
+    local text = M.PointText(diff, reagentsModern(info.recipeID), prof, info.name, skill)
     paintCost(frame, text or nil, -28)     -- clear of the skill-up number on the right
 end
 
@@ -670,7 +821,7 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, kind = GetTradeSkillInfo(index)
-                local text = name and kind ~= "header" and M.CraftText(reagentsClassic(index))
+                local text = name and kind ~= "header" and pointFor(CLASSIC_DIFFICULTY[kind], reagentsClassic(index), name, false)
                 paintCost(b, b:IsShown() and text or nil, -4)
             end
         end
@@ -681,7 +832,7 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, _, kind = GetCraftInfo(index)
-                local text = name and kind ~= "header" and M.CraftText(reagentsCraft(index))
+                local text = name and kind ~= "header" and pointFor(CLASSIC_DIFFICULTY[kind], reagentsCraft(index), name, true)
                 paintCost(b, b:IsShown() and text or nil, -4)
             end
         end
@@ -1521,10 +1672,21 @@ local function buildLeveling(page)
         row.text:SetWordWrap(false)
     end, function(row, r, i)
         local cost = r.missing > 0 and (C.dim .. "needs prices for " .. r.missing .. " reagent" .. (r.missing == 1 and "" or "s") .. "|r")
-            or (C.gold .. W.Money(r.perPoint) .. "|r" .. C.dim .. " per point|r")
-        row.text:SetText(("%s%d.|r %s%s|r  %s  %s"):format(C.dim, i, C.white, r.name, DIFFICULTY_NAME[r.diff] or "", cost))
+            or (C.gold .. (r.exact and "" or "~") .. W.Money(r.perPoint) .. "|r" .. C.dim .. " per point|r")
+        row.text:SetText(("%s%d.|r %s%s|r%s  %s  %s"):format(C.dim, i, C.white, r.name, r.unlearned and (C.dim .. " (not learned)|r") or "",
+            DIFFICULTY_NAME[r.diff] or "", cost))
         row.tip = function(tip)
             tip:AddLine(r.name, 1, 0.82, 0)
+            if r.unlearned then tip:AddLine("Not learned yet. At your skill it would be " .. (DIFFICULTY_NAME[r.diff] or "?") .. ", so it's worth training.", 0.6, 0.85, 1, true) end
+            local plan = db.plans[ui.prof]
+            local t = thresholds(ui.prof, r.name)
+            if r.exact and t then
+                tip:AddLine(("Skill-up chance %d%%: yellow from %s, grey from %s (your skill %s)"):format(math.floor((r.chance or 1) * 100 + 0.5),
+                    tostring(t.y or ((t.o or 0) + 1)), tostring(t.x or "?"), tostring(plan and plan.skill or "?")), 0.8, 0.85, 0.95, true)
+            elseif r.diff ~= 0 then
+                tip:AddLine(("Skill-up chance about %d%% (a guess: RUIN hasn't seen where this recipe turns yellow and grey yet)"):format(
+                    math.floor((r.chance or 1) * 100 + 0.5)), 0.6, 0.6, 0.6, true)
+            end
             tip:AddLine(("One craft: %s from RUIN prices"):format(W.Money(r.cost)), 1, 1, 1)
             for _, rg in ipairs(r.reagents or {}) do
                 local _, src, by = buyPrice(rg[1])
@@ -1617,10 +1779,10 @@ local function buildPage(panel)
             if not ui.prof or not db.plans[ui.prof] then ui.prof = next(db.plans) end
             local plan = ui.prof and db.plans[ui.prof]
             ui.profPick:SetText(ui.prof or "No profession yet")
-            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s (as of %s) · costs from current RUIN prices. Orange always gives a point, yellow usually, green sometimes.")
+            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s (as of %s) · costs from current RUIN prices. Orange always gives a point; yellow and green less often the closer they are to grey (~ marks a guess).")
                 :format(ui.prof, tostring(plan.skill or "?"), tostring(plan.max or "?"), W.Ago(GetServerTime() - plan.t)) .. "|r") or "")
             local list = {}
-            for i, r in ipairs(M.LivePlan(plan) or {}) do if i <= 25 then list[i] = r end end
+            for i, r in ipairs(M.LivePlan(plan and (plan.prof and plan or setmetatable({ prof = ui.prof }, { __index = plan }))) or {}) do if i <= 25 then list[i] = r end end
             ui.levelList:SetItems(list)
         elseif tab == TAB.Treasury then
             ns.Treasury.Refresh()
@@ -1652,6 +1814,7 @@ function M:OnEnable()
 
     self:Listen("PRICES", "OnPrices")
     self:Listen("VPRICES", "OnVendorPrices")
+    self:Listen("RSKILL", "OnRecipeSkill")
     self:Listen("CRAFTS", "OnCrafts")
     self:Listen("REQ", "OnRequest")
     self:Listen("REQDEL", "OnRequestDelete")
@@ -1731,7 +1894,7 @@ SlashCmdList.RUINEXCHANGE = function(msg)
         return
     elseif cmd:lower() == "costs" then
         db.pointCosts = db.pointCosts == false
-        M:Print("Price per Craft in the profession window: " .. (db.pointCosts and "on" or "off"))
+        M:Print("Price per Point in the profession window: " .. (db.pointCosts and "on" or "off"))
         M.RepaintRecipeCosts()
         return
     elseif cmd:lower() == "autoscan" then
