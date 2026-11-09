@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.5.2 — 2026-11-08
 
+- Item names and details come from C_Item when the old global item functions aren't there (the Retail 12 client WoW Forever runs on), so items stop showing as "Loading item...".
 - Item names are asked for through RUIN Core's queue, a few at a time.
 - Exchange reads WoW Forever's modern auction house properly. Opening the auction house starts a full scan by itself (the game allows one every 15 minutes), which prices every listing at once instead of only what you searched for. `/ex scan` asks for one; `/ex autoscan` turns the automatic scan off or on.
 - Clicking into an item or a stack of trade goods also records its cheapest price.

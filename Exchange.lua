@@ -9,6 +9,18 @@
 -- keeps a treasury book (Treasury.lua), and crafts confirmed by both sides
 -- make a crafting history (History.lua).
 local ADDON, ns = ...
+
+-- WoW Forever runs on the Retail 12 client, where the old global item
+-- functions may be gone; these ask C_Item when they are. (Inside each
+-- function the name still means the global, so tests and older clients work.)
+local GetItemInfo = function(...)
+    local f = GetItemInfo or (C_Item and C_Item.GetItemInfo)
+    if f then return f(...) end
+end
+local GetItemInfoInstant = function(...)
+    local f = GetItemInfoInstant or (C_Item and C_Item.GetItemInfoInstant)
+    if f then return f(...) end
+end
 local R = RUIN_API
 if not R or (R.apiLevel or 1) < 9 then
     print("|cff54b7d9[RUIN]|r Exchange needs a newer RUIN Core (0.3.16 or later).")
@@ -1449,7 +1461,8 @@ end
 -- names of items RUIN has prices for
 local function idByName(nm)
     local id = R.Items.IdByName and R.Items.IdByName(nm)
-    if not id and GetItemInfoInstant then id = tonumber((GetItemInfoInstant(nm))) end
+    if not id then id = tonumber((GetItemInfoInstant(nm))) end
+    if id and id <= 0 then id = nil end
     if not id and GetItemInfo then
         local _, link = GetItemInfo(nm)
         id = link and tonumber(link:match("item:(%d+)"))
@@ -1546,7 +1559,7 @@ local function onTooltip(tooltip, data)
             or name:match("^Schematic:") or name:match("^Manual:"))
         local texts = isRecipe and tooltipTexts(tooltip, data) or {}
         local extra = isRecipe and M.RecipeLines(name, texts) or nil
-        if M.tipDebug and isRecipe ~= nil then
+        if M.tipDebug then
             M.tipDebug = false
             M:Print(("tip debug: id %s, name %s, class %s (%s), recipe %s, %d lines, result %s"):format(tostring(id), tostring(name),
                 tostring(class), tostring(classID), tostring(isRecipe and true or false), #texts, extra and #extra or "nil"))
