@@ -1554,10 +1554,25 @@ local function onTooltip(tooltip, data)
         local name, _, _, _, class = itemInfo(id)
         if not name and GetItemInfo then name, _, _, _, _, class = GetItemInfo(link) end
         local classID = GetItemInfoInstant and select(6, GetItemInfoInstant(id))
-        local isRecipe = name and (class == "Recipe" or classID == 9
-            or name:match("^Recipe:") or name:match("^Pattern:") or name:match("^Formula:") or name:match("^Plans:")
-            or name:match("^Schematic:") or name:match("^Manual:"))
-        local texts = isRecipe and tooltipTexts(tooltip, data) or {}
+        -- a recipe's tooltip reports the item it makes (Tasty Lion Steak), so
+        -- the recipe itself is read from the tooltip's title line
+        local title
+        local tname = tooltip and tooltip.GetName and tooltip:GetName()
+        local first = tname and _G[tname .. "TextLeft1"]
+        title = plain(first and first.GetText and first:GetText())
+        local function recipeName(n)
+            return type(n) == "string" and (n:match("^Recipe:") or n:match("^Pattern:") or n:match("^Formula:") or n:match("^Plans:")
+                or n:match("^Schematic:") or n:match("^Manual:") or n:match("^Design:")) and n or nil
+        end
+        if recipeName(title) then name = title end
+        local isRecipe = name and (class == "Recipe" or classID == 9 or recipeName(name))
+        local texts = {}
+        if isRecipe then
+            -- the tooltip's own lines hold the reagents and the skill; the data may only describe the made item
+            texts = tooltipTexts(tooltip, nil)
+            if #texts == 0 then texts = tooltipTexts(tooltip, data) end
+        end
+        for _, t in ipairs(texts) do if t:find("Price per Craft", 1, true) then isRecipe = false end end   -- already added
         local extra = isRecipe and M.RecipeLines(name, texts) or nil
         if M.tipDebug then
             M.tipDebug = false
