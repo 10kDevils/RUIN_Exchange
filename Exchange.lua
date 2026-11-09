@@ -1415,6 +1415,74 @@ local function priceLines(link)
     return lines
 end
 
+-- A recipe item ("Recipe: Tasty Lion Steak"): what one craft costs, and the
+-- Price per Point at your skill when RUIN can tell. The reagents come from
+-- RUIN's recipe book, or the tooltip's own reagent line ("Lion Meat (2),
+-- Soothing Spices") just above "Requires Cooking (150)".
+local function tooltipTexts(tooltip)
+    local out, name = {}, tooltip and tooltip.GetName and tooltip:GetName()
+    if not name then return out end
+    for i = 1, (tooltip.NumLines and tooltip:NumLines()) or 30 do
+        local fs = _G[name .. "TextLeft" .. i]
+        local t = fs and fs.GetText and fs:GetText()
+        if type(t) == "string" and not (issecretvalue and issecretvalue(t)) then out[#out + 1] = t end
+    end
+    return out
+end
+
+local function parseReagents(text)
+    if type(text) ~= "string" then return nil end
+    text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("^[^:]-[Rr]eagents?:%s*", "")
+    local out = {}
+    for part in text:gmatch("[^,]+") do
+        part = part:gsub("^%s+", ""):gsub("%s+$", "")
+        local item, count = part:match("^(.-)%s*%((%d+)%)$")
+        local id = R.Items.IdByName and R.Items.IdByName(item or part)
+        if not id then return nil end
+        out[#out + 1] = { id, tonumber(count) or 1 }
+    end
+    return #out > 0 and out or nil
+end
+
+function M.RecipeLines(itemName, texts)
+    local recipe = type(itemName) == "string" and itemName:match("^[^:]+:%s*(.+)$")
+    if not recipe then return nil end
+    local prof, req, reagents
+    for i, t in ipairs(texts or {}) do
+        local p, r = t:match("^[^%(]-%s(%a[%a ]-)%s%((%d+)%)$")
+        if p and r and (t:find("Cooking") or t:find("Requires")) then
+            prof, req = p, tonumber(r)
+            reagents = parseReagents(texts[i - 1])
+        end
+    end
+    -- the book knows the counts even when the tooltip's line can't be read
+    for p, book in pairs(db.recipeBook) do
+        if book[recipe] and (not prof or p == prof) then prof = prof or p; reagents = book[recipe]; break end
+    end
+    if not reagents then return nil end
+    if prof then rememberReagents(prof, recipe, reagents) end
+    local lines = {}
+    local cost, missing = craftCost(reagents)
+    lines[1] = #missing > 0 and (C.dim .. "Price per Craft: some reagents have no RUIN price yet|r")
+        or ("%sPrice per Craft: %s|r"):format(C.gold, W.Money(cost))
+    if prof and #missing == 0 then
+        if req and req > 0 then noteColor(prof, recipe, 0, req) end
+        local skill = profSkill and profSkill(prof)
+        if skill and req and skill < req then
+            lines[#lines + 1] = ("%sYou need %d %s to learn it (you have %d).|r"):format(C.dim, req, prof, skill)
+        elseif skill then
+            local diff = predictDiff(prof, recipe, skill)
+            local pt = diff and M.PointText(diff, reagents, prof, recipe, skill)
+            if diff == 3 then
+                lines[#lines + 1] = C.dim .. "Grey at your skill: no skill points.|r"
+            elseif pt then
+                lines[#lines + 1] = ("%sPrice per Point at your skill: %s"):format(C.gold, pt)
+            end
+        end
+    end
+    return lines
+end
+
 local function onTooltip(tooltip)
     if not db or not db.tooltip then return end
     local link
@@ -1426,6 +1494,12 @@ local function onTooltip(tooltip)
     if not link or (issecretvalue and issecretvalue(link)) then return end
     local ok, lines = pcall(priceLines, link)
     if ok and lines then for _, l in ipairs(lines) do tooltip:AddLine(l) end end
+    local id = tonumber(tostring(link):match("item:(%d+)"))
+    local name, _, _, _, class = itemInfo(id)
+    if name and (class == "Recipe" or (GetItemInfoInstant and select(6, GetItemInfoInstant(id)) == 9)) then
+        local ok2, extra = pcall(M.RecipeLines, name, tooltipTexts(tooltip))
+        if ok2 and extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
+    end
 end
 
 if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
