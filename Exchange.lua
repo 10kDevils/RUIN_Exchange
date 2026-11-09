@@ -2009,8 +2009,7 @@ local function buildPage(panel)
             if not ui.prof or not db.plans[ui.prof] then ui.prof = next(db.plans) end
             local plan = ui.prof and db.plans[ui.prof]
             ui.profPick:SetText(ui.prof or "No profession yet")
-            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s (as of %s) · costs from current RUIN prices. Orange always gives a point; yellow and green less often the closer they are to grey (~ marks a guess).")
-                :format(ui.prof, tostring(plan.skill or "?"), tostring(plan.max or "?"), W.Ago(GetServerTime() - plan.t)) .. "|r") or "")
+            ui.levelInfo:SetText(plan and (C.dim .. ("%s %s/%s"):format(ui.prof, tostring(plan.skill or "?"), tostring(plan.max or "?")) .. "|r") or "")
             local list = {}
             for i, r in ipairs(M.LivePlan(plan and (plan.prof and plan or setmetatable({ prof = ui.prof }, { __index = plan }))) or {}) do if i <= 25 then list[i] = r end end
             ui.levelList:SetItems(list)
