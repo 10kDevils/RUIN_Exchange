@@ -19,7 +19,7 @@ local C = W.COLORS
 
 local M = R:RegisterModule("Exchange", { version = "0.5.2" })
 
-local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
+local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
 local HISTORY_DAYS = 14
 local REQUEST_HOURS = 24
@@ -583,6 +583,21 @@ local function closeScannedWindow()
     if CloseCraft then pcall(CloseCraft) end
 end
 
+-- What every recipe takes, learned or not, by profession and name, so a
+-- trainer's list (which doesn't say) can be priced.
+local function rememberReagents(prof, name, reagents)
+    if not (prof and name and reagents and #reagents > 0) then return end
+    db.recipeBook[prof] = db.recipeBook[prof] or {}
+    local flat = {}
+    for _, r in ipairs(reagents) do flat[#flat + 1] = { r[1], r[2] } end
+    db.recipeBook[prof][name] = flat
+end
+local function rememberRecipe(prof, name, recipeID)
+    if db.recipeBook[prof] and db.recipeBook[prof][name] then return end
+    rememberReagents(prof, name, reagentsModern(recipeID))
+end
+M.RememberReagents = rememberReagents
+
 local function scanCrafts()
     local prof, list, recipes, skill, maxSkill = nil, {}, {}, nil, nil
     local made = {}            -- recipe name -> { id, quality }
@@ -606,6 +621,7 @@ local function scanCrafts()
         skill, maxSkill = info and info.skillLevel, info and info.maxSkillLevel
         for _, id in ipairs(C_TradeSkillUI.GetAllRecipeIDs() or {}) do
             local r = C_TradeSkillUI.GetRecipeInfo(id)
+            if r and r.name then rememberRecipe(prof, r.name, id) end
             if r and r.learned and r.name then
                 list[#list + 1] = r.name
                 local iid, q = madeItem(recipeLinkModern(id))
@@ -634,6 +650,7 @@ local function scanCrafts()
                 if iid then made[name] = { iid, q } end
                 local diff = CLASSIC_DIFFICULTY[kind]
                 if diff then noteColor(prof, name, diff, skill) end
+                rememberReagents(prof, name, reagentsClassic(i))
                 if diff and diff < 3 then recipes[#recipes + 1] = { name = name, diff = diff, reagents = reagentsClassic(i) } end
             end
         end
@@ -718,14 +735,14 @@ end
 -- Price per Point: one craft divided by the chance of a skill point.
 -- "1s 20c/pt" when the chance is worked out from the recipe's color levels,
 -- "~1s 20c/pt" when it's the 3-in-4 / 1-in-4 guess, "?/pt" when a reagent
--- has no price, "grey" for no points, and "18s/craft" when RUIN can't tell
+-- has no price, nothing for grey (no points), and "18s/craft" when RUIN can't tell
 -- what color an unlearned recipe would be.
 function M.PointText(diff, reagents, prof, name, skill)
     if not reagents or #reagents == 0 then return nil end
     if diff == nil then return M.CraftText(reagents) end
-    if diff == 3 then return C.dim .. "grey|r" end
+    if diff == 3 then return nil end                 -- grey: no points, nothing to show
     local chance, exact = chanceFor(prof, name, diff, skill)
-    if not chance or chance <= 0 then return C.dim .. "grey|r" end
+    if not chance or chance <= 0 then return nil end
     local cost, missing = craftCost(reagents)
     if #missing > 0 then return C.dim .. "?/pt|r" end
     return C.gold .. (exact and "" or "~") .. M.ShortMoney(cost / chance) .. "|r" .. C.dim .. "/pt|r"
@@ -863,10 +880,133 @@ function M.HookRecipeCosts()
     paintClassic()
 end
 
+---------------------------------------------------------------------------
+-- Price per Point at a profession trainer. A trainer's recipe needs a
+-- skill to learn ("Requires: Cooking (80)"), and that's where it starts
+-- orange. Its reagents come from your profession window (RUIN remembers
+-- every recipe it lists there, learned or not). If RUIN knows where the
+-- recipe turns yellow and grey it shows the Price per Point at your skill,
+-- otherwise the Price per Craft; nothing for a recipe that would be grey.
+---------------------------------------------------------------------------
+local function profSkill(prof)
+    if not prof then return nil end
+    if GetProfessions and GetProfessionInfo then
+        for _, idx in ipairs({ GetProfessions() }) do
+            if idx then
+                local name, _, rank = GetProfessionInfo(idx)
+                if name == prof then return rank end
+            end
+        end
+    end
+    local me = R:GetPlayer()
+    local e = me and db.crafters[me.guid]
+    return e and e.skill and e.skill[prof]
+end
+
+-- name -> { profession, required skill } for the open trainer
+local function trainerServices()
+    local out = {}
+    if not (GetNumTrainerServices and GetTrainerServiceInfo) then return out end
+    for i = 1, GetNumTrainerServices() or 0 do
+        local name, _, category = GetTrainerServiceInfo(i)
+        if name and category ~= "header" then
+            local prof, req = nil, nil
+            if GetTrainerServiceSkillReq then prof, req = GetTrainerServiceSkillReq(i) end
+            out[name] = { prof = prof, req = tonumber(req), index = i }
+        end
+    end
+    return out
+end
+
+-- a trainer's tooltip lists reagents by name: "Reagents: Boar Ribs, Mild Spices (2)"
+local function trainerReagents(index)
+    local CT = rawget(_G, "C_TooltipInfo")
+    if not (index and CT and CT.GetTrainerService) then return nil end
+    local ok, data = pcall(CT.GetTrainerService, index)
+    if not (ok and type(data) == "table" and data.lines) then return nil end
+    for _, line in ipairs(data.lines) do
+        local text = line.leftText
+        local list = type(text) == "string" and text:match("^[^:]-[Rr]eagents?:%s*(.+)$")
+        if list then
+            list = list:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            local out = {}
+            for part in list:gmatch("[^,]+") do
+                part = part:gsub("^%s+", ""):gsub("%s+$", "")
+                local item, count = part:match("^(.-)%s*%((%d+)%)$")
+                item = item or part
+                local id = R.Items.IdByName and R.Items.IdByName(item)
+                if not id then return nil end            -- one we can't place: don't guess
+                out[#out + 1] = { id, tonumber(count) or 1 }
+            end
+            return #out > 0 and out or nil
+        end
+    end
+end
+
+function M.TrainerText(name, services)
+    local sv = services and services[name]
+    if not (sv and sv.prof) then return nil end
+    local reagents = db.recipeBook[sv.prof] and db.recipeBook[sv.prof][name]
+    if not reagents then
+        reagents = trainerReagents(sv.index)
+        if reagents then rememberReagents(sv.prof, name, reagents) end
+    end
+    if not reagents then return nil end
+    local skill = profSkill(sv.prof)
+    if sv.req and sv.req > 0 then noteColor(sv.prof, name, 0, sv.req) end   -- it's orange from the skill it needs
+    if not skill or (sv.req and skill < sv.req) then return M.CraftText(reagents) end
+    local diff = predictDiff(sv.prof, name, skill)
+    if diff == 3 then return nil end
+    return M.PointText(diff, reagents, sv.prof, name, skill)
+end
+
+local function trainerRowName(row)
+    local fs = rawget(row, "name") or rawget(row, "Name")
+    if type(fs) == "table" and fs.GetText then return fs:GetText() end
+    if row.GetText then return row:GetText() end
+end
+
+local function paintTrainer()
+    if not (ClassTrainerFrame and ClassTrainerFrame:IsShown()) then return end
+    local services = trainerServices()
+    local function paint(row)
+        local name = trainerRowName(row)
+        local text = name and M.TrainerText(name, services)
+        local fs = costLabel(row)
+        fs:ClearAllPoints()
+        fs:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -10, 6)
+        fs:SetText(text or "")
+        if text and db.pointCosts ~= false then fs:Show() else fs:Hide() end
+    end
+    local box = ClassTrainerFrame.ScrollBox
+    if box and box.ForEachFrame then box:ForEachFrame(paint) end
+    for i = 1, CLASS_TRAINER_SKILLS_DISPLAYED or 0 do
+        local b = _G["ClassTrainerSkill" .. i]
+        if b and b:IsShown() then paint(b) end
+    end
+end
+M.PaintTrainer = paintTrainer
+
+function M.HookTrainer()
+    local box = ClassTrainerFrame and ClassTrainerFrame.ScrollBox
+    if box and not hooked.trainer then
+        hooked.trainer = true
+        if ScrollUtil and ScrollUtil.AddInitializedFrameCallback then
+            ScrollUtil.AddInitializedFrameCallback(box, function() C_Timer.After(0, paintTrainer) end, M, true)
+        end
+    end
+    if ClassTrainerFrame_Update and not hooked.trainerClassic then
+        hooked.trainerClassic = true
+        hooksecurefunc("ClassTrainerFrame_Update", paintTrainer)
+    end
+    paintTrainer()
+end
+
 -- prices that change while the window is open repaint the costs
 function M.RepaintRecipeCosts()
     paintModern()
     paintClassic()
+    paintTrainer()
 end
 
 ---------------------------------------------------------------------------
@@ -1849,6 +1989,8 @@ function M:OnEnable()
     self:RegisterEvent("ITEM_SEARCH_RESULTS_UPDATED", onItemSearch)
     self:RegisterEvent("REPLICATE_ITEM_LIST_UPDATE", readReplicate)
     self:RegisterEvent("AUCTION_HOUSE_SHOW", onAuctionShow)
+    self:RegisterEvent("TRAINER_SHOW", function() C_Timer.After(0, M.HookTrainer) end)
+    self:RegisterEvent("TRAINER_UPDATE", function() C_Timer.After(0, M.PaintTrainer) end)
     self:RegisterEvent("MERCHANT_SHOW", function() db.lastVendor = UnitName and UnitName("npc"); C_Timer.After(0.5, M.ScanMerchant) end)
     self:RegisterEvent("MERCHANT_UPDATE", function() C_Timer.After(0.2, M.ScanMerchant) end)
     self:RegisterEvent("MERCHANT_CLOSED", shareVendor)
