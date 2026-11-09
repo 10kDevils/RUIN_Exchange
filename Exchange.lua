@@ -1536,15 +1536,26 @@ local function onTooltip(tooltip, data)
     if not link or (issecretvalue and issecretvalue(link)) then return end
     local ok, lines = pcall(priceLines, link)
     if ok and lines then for _, l in ipairs(lines) do tooltip:AddLine(l) end end
-    local id = tonumber(tostring(link):match("item:(%d+)"))
-    local name, _, _, _, class = itemInfo(id)
-    local isRecipe = name and (class == "Recipe" or (GetItemInfoInstant and select(6, GetItemInfoInstant(id)) == 9)
-        or name:match("^Recipe:") or name:match("^Pattern:") or name:match("^Formula:") or name:match("^Plans:")
-        or name:match("^Schematic:") or name:match("^Manual:"))
-    if isRecipe then
-        local ok2, extra = pcall(M.RecipeLines, name, tooltipTexts(tooltip, data))
-        if ok2 and extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
-    end
+    local ok3, err = pcall(function()
+        local id = tonumber(tostring(link):match("item:(%d+)"))
+        local name, _, _, _, class = itemInfo(id)
+        if not name and GetItemInfo then name, _, _, _, _, class = GetItemInfo(link) end
+        local classID = GetItemInfoInstant and select(6, GetItemInfoInstant(id))
+        local isRecipe = name and (class == "Recipe" or classID == 9
+            or name:match("^Recipe:") or name:match("^Pattern:") or name:match("^Formula:") or name:match("^Plans:")
+            or name:match("^Schematic:") or name:match("^Manual:"))
+        local texts = isRecipe and tooltipTexts(tooltip, data) or {}
+        local extra = isRecipe and M.RecipeLines(name, texts) or nil
+        if M.tipDebug and isRecipe ~= nil then
+            M.tipDebug = false
+            M:Print(("tip debug: id %s, name %s, class %s (%s), recipe %s, %d lines, result %s"):format(tostring(id), tostring(name),
+                tostring(class), tostring(classID), tostring(isRecipe and true or false), #texts, extra and #extra or "nil"))
+            for i, t in ipairs(texts) do M:Print(("  %d: %s"):format(i, t)) end
+            for _, l in ipairs(extra or {}) do M:Print("  -> " .. l) end
+        end
+        if extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
+    end)
+    if not ok3 and M.tipDebug then M.tipDebug = false; M:Print("tip debug error: " .. tostring(err)) end
 end
 
 if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall and Enum and Enum.TooltipDataType then
@@ -2157,6 +2168,10 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     end
     if cmd:lower() == "scan" then
         M.FullScan(false)
+        return
+    elseif cmd:lower() == "tipdebug" then
+        M.tipDebug = true
+        M:Print("Hover a recipe item: Exchange prints what it reads from the tooltip (once).")
         return
     elseif cmd:lower() == "costs" then
         db.pointCosts = db.pointCosts == false
