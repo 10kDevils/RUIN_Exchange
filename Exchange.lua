@@ -558,10 +558,9 @@ local function scheduleCraftScan()
 end
 
 ---------------------------------------------------------------------------
--- Cost per skill point beside each recipe in the profession window, from
--- current RUIN prices: what one craft's reagents cost divided by the chance
--- it gives a point (orange always, yellow 3 in 4, green 1 in 4). Grey
--- recipes show nothing; a recipe with an unpriced reagent shows "?".
+-- Price per Craft beside each recipe in the profession window, from current
+-- RUIN prices: what one craft's reagents cost, for every recipe listed,
+-- learned or not. A recipe with an unpriced reagent shows "?".
 ---------------------------------------------------------------------------
 local function reagentsCraft(index)
     local out = {}
@@ -575,7 +574,17 @@ local function reagentsCraft(index)
     return out
 end
 
--- "1s 20c/pt", "?/pt" or nil (grey, or nothing to show)
+-- Price per Craft beside each recipe: what one craft's reagents cost at the
+-- cheapest RUIN price (vendor or auction house), learned or not, any color.
+-- "1s 20c/craft", "?/craft" when a reagent has no price, nil with no reagents.
+function M.CraftText(reagents)
+    if not reagents or #reagents == 0 then return nil end
+    local cost, missing = craftCost(reagents)
+    if #missing > 0 then return C.dim .. "?/craft|r" end
+    return C.gold .. M.ShortMoney(cost) .. "|r" .. C.dim .. "/craft|r"
+end
+
+-- per skill point (the Leveling page): "1s 20c/pt", "?/pt" or nil for grey
 function M.PointText(diff, reagents)
     local chance = SKILLUP_CHANCE[diff]
     if not chance or not reagents or #reagents == 0 then return nil end
@@ -643,7 +652,7 @@ local function paintModernRow(frame)
         if frame and frame.ruinCost then frame.ruinCost:Hide() end
         return
     end
-    local text = info.learned and info.relativeDifficulty and M.PointText(info.relativeDifficulty, reagentsModern(info.recipeID))
+    local text = M.CraftText(reagentsModern(info.recipeID))
     paintCost(frame, text or nil, -28)     -- clear of the skill-up number on the right
 end
 
@@ -661,7 +670,7 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, kind = GetTradeSkillInfo(index)
-                local text = name and kind ~= "header" and M.PointText(CLASSIC_DIFFICULTY[kind], reagentsClassic(index))
+                local text = name and kind ~= "header" and M.CraftText(reagentsClassic(index))
                 paintCost(b, b:IsShown() and text or nil, -4)
             end
         end
@@ -672,7 +681,7 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, _, kind = GetCraftInfo(index)
-                local text = name and kind ~= "header" and M.PointText(CLASSIC_DIFFICULTY[kind], reagentsCraft(index))
+                local text = name and kind ~= "header" and M.CraftText(reagentsCraft(index))
                 paintCost(b, b:IsShown() and text or nil, -4)
             end
         end
@@ -1722,7 +1731,7 @@ SlashCmdList.RUINEXCHANGE = function(msg)
         return
     elseif cmd:lower() == "costs" then
         db.pointCosts = db.pointCosts == false
-        M:Print("Cost per point in the profession window: " .. (db.pointCosts and "on" or "off"))
+        M:Print("Price per Craft in the profession window: " .. (db.pointCosts and "on" or "off"))
         M.RepaintRecipeCosts()
         return
     elseif cmd:lower() == "autoscan" then
