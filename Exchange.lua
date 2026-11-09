@@ -264,8 +264,9 @@ local function warmNames()
     end
     if #wantQueue > 0 then C_Timer.After(NAME_GAP, warmNames) else warming = false end
 end
+local WANT_MAX = 300          -- names waiting at once; more just wait for the next search
 function M.WantName(id)
-    if not id or wantNames[id] then return end
+    if not id or wantNames[id] or #wantQueue >= WANT_MAX then return end
     wantNames[id] = true
     wantQueue[#wantQueue + 1] = id
     if not warming and C_Timer then warming = true; C_Timer.After(NAME_GAP, warmNames) end
@@ -493,7 +494,18 @@ function M.PointText(diff, reagents)
     if not chance or not reagents or #reagents == 0 then return nil end
     local cost, missing = craftCost(reagents)
     if #missing > 0 then return C.dim .. "?/pt|r" end
-    return C.gold .. W.Money(cost / chance) .. "|r" .. C.dim .. "/pt|r"
+    return C.gold .. M.ShortMoney(cost / chance) .. "|r" .. C.dim .. "/pt|r"
+end
+
+-- short money for tight spots: "36c", "18s", "1g 20s" (copper dropped once
+-- there's silver, silver dropped from 10 gold up)
+function M.ShortMoney(copper)
+    copper = math.floor((copper or 0) + 0.5)
+    local g, s, c = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
+    if g >= 10 then return g .. "g" end
+    if g > 0 then return s > 0 and (g .. "g " .. s .. "s") or (g .. "g") end
+    if s > 0 then return s .. "s" end
+    return c .. "c"
 end
 
 local function costLabel(row)
@@ -504,12 +516,35 @@ local function costLabel(row)
     return row.ruinCost
 end
 
+-- the recipe's name: Blizzard's Label (modern rows) or the button's text
+local function nameText(row)
+    local fs = rawget(row, "Label")
+    if type(fs) ~= "table" and row.GetFontString then fs = row:GetFontString() end
+    if type(fs) ~= "table" and row.GetName and row:GetName() then fs = _G[row:GetName() .. "Text"] end
+    return type(fs) == "table" and fs or nil
+end
+
 local function paintCost(row, text, right)
     local fs = costLabel(row)
+    local shown = text ~= nil and db.pointCosts ~= false
     fs:ClearAllPoints()
     fs:SetPoint("RIGHT", row, "RIGHT", right or -4, 0)
-    fs:SetText(text or "")
-    if text ~= nil and db.pointCosts ~= false then fs:Show() else fs:Hide() end
+    fs:SetText(shown and text or "")
+    if shown then fs:Show() else fs:Hide() end
+    -- the name ends where the cost starts, so a long name is cut short
+    -- ("Enchant Chest - Minor Abso...") instead of running under it
+    local name = nameText(row)
+    if name and name.SetPoint and name.GetPoint then
+        local point, rel, relPoint, x, y = name:GetPoint(1)
+        if point then
+            name:ClearAllPoints()
+            name:SetPoint(point, rel, relPoint, x, y)
+            if shown then
+                name:SetPoint("RIGHT", fs, "LEFT", -6, 0)
+            end
+            if name.SetWordWrap then name:SetWordWrap(false) end
+        end
+    end
 end
 
 -- modern window: rows of ProfessionsFrame's recipe list
@@ -1123,8 +1158,9 @@ local function search()
         -- brings thousands; stopping early showed a random 200)
         local now, hits, unnamed = GetServerTime(), {}, 0
         for id, p in pairs(db.prices) do
-            local name = R.Items.Info(id)
-            if not name then unnamed = unnamed + 1; M.WantName(id) end
+            local name = R.Items.Info(id, true)
+            -- names only matter for matching a search; the rows shown ask for their own
+            if not name then unnamed = unnamed + 1; if q ~= "" then M.WantName(id) end end
             if q == "" or (name and name:lower():find(q, 1, true)) then
                 hits[#hits + 1] = { id = id, p = p, t = p.t or 0 }
             end
