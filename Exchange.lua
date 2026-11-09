@@ -1419,15 +1419,47 @@ end
 -- Price per Point at your skill when RUIN can tell. The reagents come from
 -- RUIN's recipe book, or the tooltip's own reagent line ("Lion Meat (2),
 -- Soothing Spices") just above "Requires Cooking (150)".
-local function tooltipTexts(tooltip)
-    local out, name = {}, tooltip and tooltip.GetName and tooltip:GetName()
+local function plain(t)
+    if type(t) ~= "string" or (issecretvalue and issecretvalue(t)) then return nil end
+    return (t:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|n", " "))
+end
+
+-- the tooltip's lines as plain text: from the tooltip data when the game
+-- passes it, else from the tooltip's own text lines
+local function tooltipTexts(tooltip, data)
+    local out = {}
+    if type(data) == "table" and type(data.lines) == "table" then
+        for _, line in ipairs(data.lines) do
+            local t = plain(line.leftText)
+            if t then out[#out + 1] = t end
+        end
+        if #out > 0 then return out end
+    end
+    local name = tooltip and tooltip.GetName and tooltip:GetName()
     if not name then return out end
     for i = 1, (tooltip.NumLines and tooltip:NumLines()) or 30 do
         local fs = _G[name .. "TextLeft" .. i]
-        local t = fs and fs.GetText and fs:GetText()
-        if type(t) == "string" and not (issecretvalue and issecretvalue(t)) then out[#out + 1] = t end
+        local t = plain(fs and fs.GetText and fs:GetText())
+        if t then out[#out + 1] = t end
     end
     return out
+end
+
+-- an item's id from its name: RUIN's item names, the game's cache, then the
+-- names of items RUIN has prices for
+local function idByName(nm)
+    local id = R.Items.IdByName and R.Items.IdByName(nm)
+    if not id and GetItemInfoInstant then id = tonumber((GetItemInfoInstant(nm))) end
+    if not id and GetItemInfo then
+        local _, link = GetItemInfo(nm)
+        id = link and tonumber(link:match("item:(%d+)"))
+    end
+    if not id then
+        for pid in pairs(db.prices) do
+            if R.Items.Info(pid, true) == nm then id = pid; break end
+        end
+    end
+    return id
 end
 
 local function parseReagents(text)
@@ -1437,11 +1469,8 @@ local function parseReagents(text)
     for part in text:gmatch("[^,]+") do
         part = part:gsub("^%s+", ""):gsub("%s+$", "")
         local item, count = part:match("^(.-)%s*%((%d+)%)$")
-        local nm = item or part
-        local id = R.Items.IdByName and R.Items.IdByName(nm)
-        -- the game knows items it has loaded by name too
-        if not id and GetItemInfoInstant then id = tonumber((GetItemInfoInstant(nm))) end
-        if not id then return nil end
+        local id = idByName(item or part)
+        if not id then return nil, item or part end
         out[#out + 1] = { id, tonumber(count) or 1 }
     end
     return #out > 0 and out or nil
@@ -1450,19 +1479,25 @@ end
 function M.RecipeLines(itemName, texts)
     local recipe = type(itemName) == "string" and itemName:match("^[^:]+:%s*(.+)$")
     if not recipe then return nil end
-    local prof, req, reagents
-    for i, t in ipairs(texts or {}) do
-        local p, r = t:match("^[^%(]-%s(%a[%a ]-)%s%((%d+)%)$")
-        if p and r and (t:find("Cooking") or t:find("Requires")) then
+    local prof, req, reagents, unknown
+    local clean = {}
+    for _, t in ipairs(texts or {}) do clean[#clean + 1] = plain(t) or "" end
+    texts = clean
+    for i, t in ipairs(texts) do
+        local p, r = t:match("^%S+%s+(.-)%s*%((%d+)%)%s*$")
+        if p and r and i > 1 and t:find("Requires", 1, true) then
             prof, req = p, tonumber(r)
-            reagents = parseReagents(texts[i - 1])
+            reagents, unknown = parseReagents(texts[i - 1])
         end
     end
     -- the book knows the counts even when the tooltip's line can't be read
     for p, book in pairs(db.recipeBook) do
         if book[recipe] and (not prof or p == prof) then prof = prof or p; reagents = book[recipe]; break end
     end
-    if not reagents then return nil end
+    if not reagents then
+        if unknown then return { ("%sPrice per Craft: RUIN doesn't know %s yet (see it once, in your bags or the auction house).|r"):format(C.dim, unknown) } end
+        return nil
+    end
     if prof then rememberReagents(prof, recipe, reagents) end
     local lines = {}
     local cost, missing = craftCost(reagents)
@@ -1490,7 +1525,7 @@ function M.RecipeLines(itemName, texts)
     return lines
 end
 
-local function onTooltip(tooltip)
+local function onTooltip(tooltip, data)
     if not db or not db.tooltip then return end
     local link
     if TooltipUtil and TooltipUtil.GetDisplayedItem then
@@ -1507,7 +1542,7 @@ local function onTooltip(tooltip)
         or name:match("^Recipe:") or name:match("^Pattern:") or name:match("^Formula:") or name:match("^Plans:")
         or name:match("^Schematic:") or name:match("^Manual:"))
     if isRecipe then
-        local ok2, extra = pcall(M.RecipeLines, name, tooltipTexts(tooltip))
+        local ok2, extra = pcall(M.RecipeLines, name, tooltipTexts(tooltip, data))
         if ok2 and extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
     end
 end
