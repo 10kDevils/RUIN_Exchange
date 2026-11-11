@@ -8,7 +8,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.5.3 — 2026-11-10
 
-- Where to sell now also says **Disenchant** (with the expected value and the likely mat) when what an item breaks into is worth more than selling it, or when the likely mat is blue or better. It uses the classic disenchanting tables by quality and item level, priced from RUIN's AH prices.
+- Where to sell now also says **Disenchant** (with the expected value and the likely mat) when what an item breaks into is worth more than selling it, judged only on the mats' value. It uses the classic disenchanting tables by quality and item level, priced from RUIN's AH prices.
+- And **Craft** for a reagent when one of your recipes turns it into something that sells for more than its reagents would (on the AH after the cut, or to a vendor): the most profitable one, with what it sells for and how much more that is.
 - "Sell on AH" counts the auction house's cost: the deposit (at least 1 silver) and the 5% cut. It shows what you'd net, and recommends the vendor when that pays more. The bag sweep uses the same sums.
 - A full auction house scan records the prices of the items in your bags first (as soon as they're read, before the rest) and always shares them.
 - Item tooltips end with a RUIN: Exchange section in a box with a faint gold border: the AH price (for the whole stack you're pointing at, with the price each) and how long ago it was seen, a merchant that sells it cheaper ("Vendor: 1s 44c from Trade Goods NPC"), the AH 7-day average, and where to sell the stack: "Sell on AH: ..." or "Sell to Vendor: ...".

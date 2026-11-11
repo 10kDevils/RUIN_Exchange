@@ -1551,6 +1551,54 @@ local function deValue(id)
 end
 M.DisenchantValue = deValue
 
+-- Crafting: what a reagent could be made into with your recipes, and
+-- whether that sells for more than the reagents would. The best one wins.
+local function saleValue(id, n)
+    n = n or 1
+    local _, _, _, sell = itemInfo(id)
+    local p = price(id)
+    local net = p and ahNet(p, n) or nil
+    local vend = sell and sell > 0 and sell * n or nil
+    if not (net or vend) then return nil end
+    return math.max(net or 0, vend or 0)
+end
+local function reagentValue(id, n)
+    -- what the reagents would fetch: the AH less its cut, or the vendor
+    local _, _, _, sell = itemInfo(id)
+    local p = price(id)
+    local ah = p and math.floor(p * n * (1 - AH_CUT)) or nil
+    local vend = sell and sell > 0 and sell * n or nil
+    if not (ah or vend) then return nil end
+    return math.max(ah or 0, vend or 0)
+end
+local function bestCraft(id)
+    local me = R.GetPlayerGUID and db.crafters[R:GetPlayerGUID() or ""]
+    if not (me and me.profs) then return nil end
+    local best
+    for prof, list in pairs(me.profs) do
+        local made = me.made and me.made[prof] and me.made[prof].i or {}
+        local book = db.recipeBook[prof] or {}
+        for n, name in ipairs(list) do
+            local product, reagents = made[n], book[name]
+            if product and product > 0 and product ~= id and reagents then
+                local uses, total, ok = 0, 0, true
+                for _, r in ipairs(reagents) do
+                    if r[1] == id then uses = r[2] end
+                    local v = reagentValue(r[1], r[2])
+                    if not v then ok = false; break end
+                    total = total + v
+                end
+                local sells = ok and uses > 0 and saleValue(product, 1)
+                if sells and sells > total and (not best or sells - total > best.profit) then
+                    best = { product = product, profit = sells - total, uses = uses, value = sells }
+                end
+            end
+        end
+    end
+    return best
+end
+M.BestCraft = bestCraft
+
 -- The RUIN: Exchange section of an item's tooltip, for the stack you're
 -- looking at (count): the auction house price (and a cheaper merchant), the
 -- 7-day average, and whether to sell it on the auction house or to a vendor.
@@ -1579,15 +1627,20 @@ local function priceLines(link, count)
     if avg and days >= 2 then
         lines[#lines + 1] = ("%sAH 7-day avg:|r %s  %s"):format(C.white, each(avg), trendText(pct))
     end
-    -- 3. where to sell it: disenchant when what it breaks into is worth more
-    -- than selling it, or when the likely mat is a blue (or better) one
-    local deTotal, deMat, deBlue, deMissing = deValue(id)
+    -- 3. what to do with it: disenchant when the mats are worth more than
+    -- selling it; craft it into something when that sells for more than the
+    -- reagents would; else the auction house or the vendor
+    local deTotal, deMat, _, deMissing = deValue(id)
     local netAH = p and ahNet(p.p, count) or nil
     local sellVendor = canVendor and vendor * count or 0
-    if deTotal and (deBlue or (not deMissing and deTotal * count > math.max(netAH or 0, sellVendor))) then
+    local craft = not deTotal and bestCraft(id)
+    if deTotal and not deMissing and deTotal * count > math.max(netAH or 0, sellVendor) then
         local matName = deMat and (GetItemInfo and GetItemInfo(deMat)) or "enchanting mats"
-        lines[#lines + 1] = ("%sDisenchant:|r %s %s(%s)|r"):format(C.good,
-            deTotal > 0 and ("~" .. W.Money(deTotal * count)) or "", C.dim, tostring(matName))
+        lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.good, W.Money(deTotal * count), C.dim, tostring(matName))
+    elseif craft then
+        local made = GetItemInfo and GetItemInfo(craft.product) or ("item " .. craft.product)
+        lines[#lines + 1] = ("%sCraft:|r %s  %s(sells ~%s, %s more than its reagents)|r"):format(C.good, tostring(made), C.dim,
+            W.Money(craft.value), W.Money(craft.profit))
     elseif p and netAH > 0 and netAH > sellVendor then
         -- worth it after the deposit (at least 1 silver) and the 5% cut
         lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.good, W.Money(p.p * count), C.dim, W.Money(netAH))
