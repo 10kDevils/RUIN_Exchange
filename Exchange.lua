@@ -1639,8 +1639,8 @@ local function priceLines(link, count)
         lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.good, W.Money(deTotal * count), C.dim, tostring(matName))
     elseif craft then
         local made = GetItemInfo and GetItemInfo(craft.product) or ("item " .. craft.product)
-        lines[#lines + 1] = ("%sCraft:|r %s  %s(sells ~%s, %s more than its reagents)|r"):format(C.good, tostring(made), C.dim,
-            W.Money(craft.value), W.Money(craft.profit))
+        lines[#lines + 1] = ("%sCraft:|r %s"):format(C.good, tostring(made))
+        lines[#lines + 1] = ("%s(sells ~%s, %s more than its reagents)|r"):format(C.dim, W.Money(craft.value), W.Money(craft.profit))
     elseif p and netAH > 0 and netAH > sellVendor then
         -- worth it after the deposit (at least 1 silver) and the 5% cut
         lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.good, W.Money(p.p * count), C.dim, W.Money(netAH))
