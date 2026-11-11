@@ -29,7 +29,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.5.2" })
+local M = R:RegisterModule("Exchange", { version = "0.5.3" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -275,7 +275,7 @@ local vendorSeen = {}          -- this visit: id -> price, to share on close
 local function buyPrice(id)
     local ah = price(id)
     local v = db.vendor and db.vendor[id]
-    if v and v.p and (not ah or v.p < ah) then return v.p, "vendor", v.by end
+    if v and v.p and (not ah or v.p < ah) then return v.p, "vendor", v.by, v.kind end
     return ah, nil, nil
 end
 M.BuyPrice = function(id) id = tonumber(id); if id then return buyPrice(id) end end
@@ -287,13 +287,27 @@ local function buyText(id, count)
     return W.Money(p * (count or 1)) .. (src == "vendor" and (" " .. C.good .. "(vendor)|r") or "")
 end
 
-local function noteVendor(id, p, by, t)
+local function noteVendor(id, p, by, t, kind)
     if not (id and p and p > 0 and p < 1e11) then return false end
     local cur = db.vendor[id]
-    if cur and cur.p and cur.p <= p then return false end    -- keep the cheapest (reputation discounts vary)
-    db.vendor[id] = { p = p, by = by, t = t or GetServerTime() }
+    if cur and cur.p and cur.p < p then return false end     -- keep the cheapest (reputation discounts vary)
+    if cur and cur.p == p and (cur.kind or not kind) then return false end
+    db.vendor[id] = { p = p, by = by, kind = kind, t = t or GetServerTime() }
     return true
 end
+
+-- The merchant's title, the line under its name ("Trade Goods"), or nil.
+local function npcTitle()
+    local TI = rawget(_G, "C_TooltipInfo")
+    if not (TI and TI.GetUnit) then return nil end
+    local ok, data = pcall(TI.GetUnit, "npc")
+    local lines = ok and type(data) == "table" and data.lines
+    local line = lines and lines[2] and lines[2].leftText
+    if type(line) ~= "string" or line == "" then return nil end
+    if line:find("^" .. (rawget(_G, "LEVEL") or "Level")) or line:find("^Level ") then return nil end
+    return line:sub(1, 40)
+end
+M.NpcTitle = npcTitle
 
 local function merchantItem(i)
     local CM = rawget(_G, "C_MerchantFrame")
@@ -313,13 +327,15 @@ end
 function M.ScanMerchant()
     if not (GetMerchantNumItems and GetMerchantItemID) then return 0 end
     local who = UnitName and UnitName("npc") or "a vendor"
+    local kind = npcTitle()
+    db.lastVendorKind = kind
     local n = 0
     for i = 1, GetMerchantNumItems() or 0 do
         local id, cost, quantity, available, extended = merchantItem(i)
         -- gold only, and only stock that doesn't run out
         if id and cost and cost > 0 and not extended and (available == nil or available < 0) then
             local each = cost / math.max(quantity or 1, 1)
-            if noteVendor(id, each, who) then vendorSeen[id] = each end
+            if noteVendor(id, each, who, nil, kind) then vendorSeen[id] = each end
             n = n + 1
         end
     end
@@ -336,15 +352,16 @@ local function shareVendor()
         if n >= VENDOR_SHARE_MAX then break end
     end
     vendorSeen = {}
-    if n > 0 then M:Send("VPRICES", { l = flat, w = db.lastVendor or who }, "ORG", nil, R.PRIORITY.BULK) end
+    if n > 0 then M:Send("VPRICES", { l = flat, w = db.lastVendor or who, k = db.lastVendorKind }, "ORG", nil, R.PRIORITY.BULK) end
 end
 
 function M:OnVendorPrices(d, sender)
     if type(d.l) ~= "table" then return end
     local who = type(d.w) == "string" and d.w:sub(1, 40) or ("a vendor (" .. tostring(sender) .. ")")
+    local kind = type(d.k) == "string" and d.k ~= "" and d.k:gsub("|", ""):sub(1, 40) or nil
     for i = 1, math.min(#d.l, VENDOR_SHARE_MAX * 2) - 1, 2 do
         local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
-        if id and id > 0 and id == math.floor(id) then noteVendor(id, p, who) end
+        if id and id > 0 and id == math.floor(id) then noteVendor(id, p, who, nil, kind) end
     end
     if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
 end
@@ -730,10 +747,11 @@ end
 function M.ShortMoney(copper)
     copper = math.floor((copper or 0) + 0.5)
     local g, s, c = math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
-    if g >= 10 then return g .. "g" end
-    if g > 0 then return s > 0 and (g .. "g " .. s .. "s") or (g .. "g") end
-    if s > 0 then return s .. "s" end
-    return c .. "c"
+    local COIN = W.COIN
+    if g >= 10 then return g .. COIN.g end
+    if g > 0 then return s > 0 and (g .. COIN.g .. " " .. s .. COIN.s) or (g .. COIN.g) end
+    if s > 0 then return s .. COIN.s end
+    return c .. COIN.c
 end
 
 -- One craft's reagents at the cheapest RUIN price: "1s 20c/craft", "?/craft"
@@ -1408,10 +1426,11 @@ local function priceLines(link)
     local p = db.prices[id]
     local _, _, _, vendor = itemInfo(id)
     local lines = {}
-    local vp, src, by = buyPrice(id)
+    local vp, src, by, kind = buyPrice(id)
     if src == "vendor" then
-        lines[#lines + 1] = ("%sVendor: %s|r %sfrom %s%s|r"):format(C.good, W.Money(vp), C.dim, tostring(by),
-            p and (", cheaper than the AH (" .. W.Money(p.p) .. ")") or "")
+        -- "Vendor: 1s 44c from Trade Goods NPC (1s 88c AH)"
+        lines[#lines + 1] = ("%sVendor: %s|r %sfrom %s%s|r"):format(C.good, W.Money(vp), C.dim,
+            kind and (kind .. " NPC") or tostring(by), p and (" (" .. W.Money(p.p) .. " AH)") or "")
     end
     if p then
         lines[#lines + 1] = ("%sRUIN price: %s|r %s%s|r"):format(C.gold, W.Money(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
@@ -1426,6 +1445,7 @@ local function priceLines(link)
     end
     return lines
 end
+M.PriceLines = priceLines
 
 -- A recipe item ("Recipe: Tasty Lion Steak"): what one craft costs, and the
 -- Price per Point at your skill when RUIN can tell. The reagents come from
@@ -1726,8 +1746,8 @@ local function search()
             local h = hits[i]
             local _, link = R.Items.Info(h.id)
             local _, pct = M:Trend(h.id)
-            local vp, src, by = buyPrice(h.id)
-            local vend = src == "vendor" and ("  " .. C.good .. W.Money(vp) .. " at a vendor (" .. tostring(by) .. ")|r") or ""
+            local vp, src, by, kind = buyPrice(h.id)
+            local vend = src == "vendor" and ("  " .. C.good .. W.Money(vp) .. " from " .. (kind and (kind .. " NPC") or tostring(by)) .. "|r") or ""
             items[#items + 1] = { text = ("%s  %s%s|r  %s  %s%s|r%s"):format(R.Items.Text(h.id), C.gold, W.Money(h.p.p), trendText(pct), C.dim,
                 W.Ago(now - h.t), vend), t = h.t, link = link }
         end

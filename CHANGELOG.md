@@ -6,6 +6,11 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.5.3 — 2026-11-10
+
+- The vendor line names the kind of merchant and shows both prices: "Vendor: 1s 44c from Trade Goods NPC (1s 88c AH)". The merchant's title is kept when you open its window and shared with RUIN; prices seen before this show the merchant's name until you visit again.
+- Money shows the game's gold, silver and copper icons instead of g, s and c everywhere in Exchange (needs RUIN Core 0.5.5).
+
 ## 0.5.2 — 2026-11-08
 
 - Item names and details come from C_Item when the old global item functions aren't there (the Retail 12 client WoW Forever runs on), so items stop showing as "Loading item...".
