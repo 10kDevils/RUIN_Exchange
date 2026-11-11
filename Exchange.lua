@@ -35,7 +35,15 @@ local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, craft
 local PRICE_BATCH = 40
 local HISTORY_DAYS = 14
 local REQUEST_HOURS = 24
-local SELL_MARGIN = 1.3         -- the AH must beat the vendor by this much to be worth it
+local AH_DEPOSIT = 100          -- listing costs at least 1 silver, lost whether it sells or not
+local AH_CUT = 0.05             -- the auction house keeps 5% of the sale
+
+-- What selling on the auction house actually brings in: the price less the
+-- house's cut and the deposit (at least 1 silver).
+local function ahNet(unit, count)
+    if not unit then return nil end
+    return math.floor(unit * (count or 1) * (1 - AH_CUT)) - AH_DEPOSIT
+end
 local SKILLUP_CHANCE = { [0] = 1, [1] = 0.75, [2] = 0.25 }        -- orange, yellow, green
 local DIFFICULTY_NAME = { [0] = "|cffff8040orange|r", [1] = "|cffffff00yellow|r", [2] = "|cff40c040green|r" }
 local CLASSIC_DIFFICULTY = { optimal = 0, medium = 1, easy = 2, trivial = 3 }
@@ -146,15 +154,34 @@ local SHARE_MOVE = 0.05         -- ...or that moved more than 5%
 local SHARE_MAX = 400           -- at most this many per scan (10 messages)
 local scanning, ahOpen
 
+-- The items in your bags: their prices come first in a scan.
+local function bagItemIds()
+    local out = {}
+    local CC = rawget(_G, "C_Container")
+    if not (CC and CC.GetContainerNumSlots and CC.GetContainerItemInfo) then return out end
+    for bag = 0, (rawget(_G, "NUM_BAG_SLOTS") or 4) do
+        for slot = 1, CC.GetContainerNumSlots(bag) or 0 do
+            local info = CC.GetContainerItemInfo(bag, slot)
+            if type(info) == "table" and info.itemID then out[info.itemID] = true end
+        end
+    end
+    return out
+end
+M.BagItemIds = bagItemIds
+
 local function finishFullScan(found)
     local now, n, picks = GetServerTime(), 0, {}
+    local bags = scanning and scanning.bags or {}
     for id, p in pairs(found) do
         n = n + 1
-        local prev = db.prices[id]
+        local prev = scanning and scanning.before and scanning.before[id] or db.prices[id]
         local move = prev and prev.p and prev.p > 0 and math.abs(p - prev.p) / prev.p or math.huge
         local age = prev and (now - (prev.t or 0)) or math.huge
-        if move > SHARE_MOVE or age > SHARE_AGE then
-            picks[#picks + 1] = { id = id, p = p, score = move == math.huge and math.huge or move + age / SHARE_AGE }
+        if bags[id] then
+            -- yours come first in what's shared too
+            picks[#picks + 1] = { id = id, p = p, score = math.huge }
+        elseif move > SHARE_MOVE or age > SHARE_AGE then
+            picks[#picks + 1] = { id = id, p = p, score = move == math.huge and 1e9 or move + age / SHARE_AGE }
         end
         db.prices[id] = { p = p, t = now, by = UnitName("player") }
         noteHistory(id, p, now)
@@ -181,6 +208,18 @@ local function readReplicate()
     if scanning.reading then return end
     scanning.reading = true
     local found, i = {}, 0
+    -- first pass: your bag items, recorded as soon as they're read, so their
+    -- prices are the first to be up to date; then everything else
+    local bags = scanning.bags or {}
+    local mine = {}
+    local function recordMine()
+        local now = GetServerTime()
+        scanning.before = scanning.before or {}
+        for id, each in pairs(mine) do
+            if scanning.before[id] == nil then scanning.before[id] = db.prices[id] or false end
+            db.prices[id] = { p = each, t = now, by = UnitName("player") }
+        end
+    end
     local function step()
         if not scanning then return end
         local stop = math.min(i + SCAN_CHUNK, scanning.total)
@@ -191,8 +230,10 @@ local function readReplicate()
             if id and buyout and buyout > 0 and count and count > 0 then
                 local each = math.floor(buyout / count)
                 if not found[id] or each < found[id] then found[id] = each end
+                if bags[id] and (not mine[id] or each < mine[id]) then mine[id] = each end
             end
         end
+        recordMine()
         if i < scanning.total then C_Timer.After(0, step) else finishFullScan(found) end
     end
     step()
@@ -214,7 +255,7 @@ function M.FullScan(quiet)
         if not quiet then M:Print("Open the auction house first.") end
         return false
     end
-    scanning = { started = GetServerTime() }
+    scanning = { started = GetServerTime(), bags = bagItemIds() }
     M:Print("Scanning the whole auction house...")
     AH.ReplicateItems()
     -- some clients only answer through the event; read it in a moment anyway
@@ -1391,8 +1432,9 @@ local function classify(it)
     if it.bound then
         return (it.sell > 0) and "vendor" or "keep", "soulbound"
     end
-    if p and p > it.sell * SELL_MARGIN then return "ah", "RUIN price " .. W.Money(p) end
-    if p then return "vendor", "vendor pays about the same as the AH" end
+    local n = math.max(1, tonumber(it.count) or 1)
+    if p and ahNet(p, n) > it.sell * n then return "ah", "RUIN price " .. W.Money(p) end
+    if p then return "vendor", "after the AH deposit and cut, the vendor pays more" end
     if it.sell > 0 then return "check", "no RUIN price yet" end
     return "keep", "can't be sold to a vendor"
 end
@@ -1420,6 +1462,95 @@ end
 ---------------------------------------------------------------------------
 -- Tooltip
 ---------------------------------------------------------------------------
+---------------------------------------------------------------------------
+-- Disenchanting: what an item is expected to break into, and what that's
+-- worth on the auction house. The classic disenchanting tables, by the
+-- item's quality and level (weapons swap the dust and essence chances).
+---------------------------------------------------------------------------
+local MAT = {
+    strange = 10940, soul = 11083, vision = 11137, dream = 11176, illusion = 16204,
+    lmagic = 10938, gmagic = 10939, lastral = 10998, gastral = 11082, lmystic = 11134, gmystic = 11135,
+    lnether = 11174, gnether = 11175, leternal = 16202, geternal = 16203,
+    sglim = 10978, lglim = 11084, sglow = 11138, lglow = 11139, srad = 11177, lrad = 11178,
+    sbril = 14343, lbril = 14344, nexus = 20725,
+}
+-- mats' quality: dust white, essences green, shards blue, the crystal epic
+local MAT_QUALITY = {}
+for _, k in ipairs({ "strange", "soul", "vision", "dream", "illusion" }) do MAT_QUALITY[MAT[k]] = 1 end
+for _, k in ipairs({ "lmagic", "gmagic", "lastral", "gastral", "lmystic", "gmystic", "lnether", "gnether", "leternal", "geternal" }) do MAT_QUALITY[MAT[k]] = 2 end
+for _, k in ipairs({ "sglim", "lglim", "sglow", "lglow", "srad", "lrad", "sbril", "lbril" }) do MAT_QUALITY[MAT[k]] = 3 end
+MAT_QUALITY[MAT.nexus] = 4
+-- uncommon: { max level, dust, dust count, essence, essence count, shard }
+local DE_GREEN = {
+    { 15, "strange", 1.5, "lmagic", 1.5, nil },
+    { 20, "strange", 2.5, "gmagic", 1.5, "sglim" },
+    { 25, "strange", 5, "lastral", 1.5, "sglim" },
+    { 30, "soul", 1.5, "gastral", 1.5, "lglim" },
+    { 35, "soul", 3.5, "lmystic", 1.5, "sglow" },
+    { 40, "vision", 1.5, "gmystic", 1.5, "lglow" },
+    { 45, "vision", 3.5, "lnether", 1.5, "srad" },
+    { 50, "dream", 1.5, "gnether", 1.5, "lrad" },
+    { 55, "dream", 3.5, "leternal", 1.5, "sbril" },
+    { 60, "illusion", 1.5, "geternal", 1.5, "lbril" },
+    { 999, "illusion", 3.5, "geternal", 2.5, "lbril" },
+}
+-- rare: one shard (a sliver of a chance at a Nexus Crystal at the top)
+local DE_BLUE = { { 25, "sglim" }, { 30, "lglim" }, { 35, "sglow" }, { 40, "lglow" }, { 45, "srad" }, { 50, "lrad" }, { 55, "sbril" }, { 999, "lbril" } }
+-- epic: shards, then crystals
+local DE_PURPLE = { { 45, "srad", 3 }, { 50, "lrad", 3 }, { 55, "sbril", 3 }, { 60, "nexus", 1 }, { 999, "nexus", 1.5 } }
+
+-- { { id, chance, count }, ... } for an item, or nil when it can't be disenchanted
+local function deYield(id)
+    if not GetItemInfo then return nil end
+    local name, _, quality, ilvl, _, _, _, _, equip, _, _, classID = GetItemInfo(id)
+    if not name or not quality or quality < 2 or quality > 4 then return nil end
+    if classID ~= 2 and classID ~= 4 then return nil end           -- weapons and armor only
+    if not equip or equip == "" or equip == "INVTYPE_BAG" or equip == "INVTYPE_TABARD" or equip == "INVTYPE_BODY" then return nil end
+    ilvl = tonumber(ilvl) or 0
+    if ilvl < 5 then return nil end
+    if quality == 2 then
+        for _, row in ipairs(DE_GREEN) do
+            if ilvl <= row[1] then
+                local weapon = classID == 2
+                local dustP, essP = weapon and 0.20 or 0.75, weapon and 0.75 or 0.20
+                if not row[6] then dustP, essP = weapon and 0.20 or 0.80, weapon and 0.80 or 0.20 end
+                local out = { { MAT[row[2]], dustP, row[3] }, { MAT[row[4]], essP, row[5] } }
+                if row[6] then out[3] = { MAT[row[6]], 0.05, 1 } end
+                return out
+            end
+        end
+    elseif quality == 3 then
+        if ilvl < 11 then return nil end
+        for _, row in ipairs(DE_BLUE) do
+            if ilvl <= row[1] then
+                if row[2] == "lbril" and ilvl > 55 then return { { MAT.lbril, 0.995, 1 }, { MAT.nexus, 0.005, 1 } } end
+                return { { MAT[row[2]], 1, 1 } }
+            end
+        end
+    else
+        if ilvl < 40 then return nil end
+        for _, row in ipairs(DE_PURPLE) do
+            if ilvl <= row[1] then return { { MAT[row[2]], 1, row[3] } } end
+        end
+    end
+end
+M.DisenchantYield = deYield
+
+-- Expected value of disenchanting (copper), the most likely mat, whether
+-- that mat is blue or better, and whether some mats had no price yet.
+local function deValue(id)
+    local yield = deYield(id)
+    if not yield then return nil end
+    local total, missing, best, bestP = 0, false, nil, -1
+    for _, y in ipairs(yield) do
+        local p = price(y[1])
+        if p then total = total + p * y[2] * y[3] else missing = true end
+        if y[2] > bestP then best, bestP = y[1], y[2] end
+    end
+    return total, best, (MAT_QUALITY[best] or 1) >= 3, missing
+end
+M.DisenchantValue = deValue
+
 -- The RUIN: Exchange section of an item's tooltip, for the stack you're
 -- looking at (count): the auction house price (and a cheaper merchant), the
 -- 7-day average, and whether to sell it on the auction house or to a vendor.
@@ -1432,7 +1563,7 @@ local function priceLines(link, count)
     local vp, src, by, kind = buyPrice(id)
     local avg, pct, days = M:Trend(id)
     local canVendor = vendor and vendor > 0
-    if not (p or src == "vendor" or canVendor) then return nil end
+    if not (p or src == "vendor" or canVendor or deYield(id)) then return nil end
     local lines = { C.gold .. "RUIN: Exchange|r" }
     local function each(v) return count > 1 and (("%s %s(%s each)|r"):format(W.Money(v * count), C.dim, W.Money(v))) or W.Money(v) end
     -- 1. the auction house price, and a merchant that sells it cheaper
@@ -1448,9 +1579,18 @@ local function priceLines(link, count)
     if avg and days >= 2 then
         lines[#lines + 1] = ("%sAH 7-day avg:|r %s  %s"):format(C.white, each(avg), trendText(pct))
     end
-    -- 3. where to sell it
-    if p and (not canVendor or p.p > vendor * SELL_MARGIN) then
-        lines[#lines + 1] = ("%sSell on AH:|r %s"):format(C.good, W.Money(p.p * count))
+    -- 3. where to sell it: disenchant when what it breaks into is worth more
+    -- than selling it, or when the likely mat is a blue (or better) one
+    local deTotal, deMat, deBlue, deMissing = deValue(id)
+    local netAH = p and ahNet(p.p, count) or nil
+    local sellVendor = canVendor and vendor * count or 0
+    if deTotal and (deBlue or (not deMissing and deTotal * count > math.max(netAH or 0, sellVendor))) then
+        local matName = deMat and (GetItemInfo and GetItemInfo(deMat)) or "enchanting mats"
+        lines[#lines + 1] = ("%sDisenchant:|r %s %s(%s)|r"):format(C.good,
+            deTotal > 0 and ("~" .. W.Money(deTotal * count)) or "", C.dim, tostring(matName))
+    elseif p and netAH > 0 and netAH > sellVendor then
+        -- worth it after the deposit (at least 1 silver) and the 5% cut
+        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.good, W.Money(p.p * count), C.dim, W.Money(netAH))
     elseif canVendor then
         lines[#lines + 1] = ("%sSell to Vendor:|r %s"):format(C.good, W.Money(vendor * count))
     end
