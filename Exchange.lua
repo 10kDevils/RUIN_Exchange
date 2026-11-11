@@ -1420,32 +1420,104 @@ end
 ---------------------------------------------------------------------------
 -- Tooltip
 ---------------------------------------------------------------------------
-local function priceLines(link)
+-- The RUIN: Exchange section of an item's tooltip, for the stack you're
+-- looking at (count): the auction house price (and a cheaper merchant), the
+-- 7-day average, and whether to sell it on the auction house or to a vendor.
+local function priceLines(link, count)
     local id = tonumber(tostring(link):match("item:(%d+)"))
     if not id then return nil end
+    count = math.max(1, math.floor(tonumber(count) or 1))
     local p = db.prices[id]
     local _, _, _, vendor = itemInfo(id)
-    local lines = {}
     local vp, src, by, kind = buyPrice(id)
-    if src == "vendor" then
-        -- "Vendor: 1s 44c from Trade Goods NPC (1s 88c AH)"
-        lines[#lines + 1] = ("%sVendor: %s|r %sfrom %s%s|r"):format(C.good, W.Money(vp), C.dim,
-            kind and (kind .. " NPC") or tostring(by), p and (" (" .. W.Money(p.p) .. " AH)") or "")
-    end
+    local avg, pct, days = M:Trend(id)
+    local canVendor = vendor and vendor > 0
+    if not (p or src == "vendor" or canVendor) then return nil end
+    local lines = { C.gold .. "RUIN: Exchange|r" }
+    local function each(v) return count > 1 and (("%s %s(%s each)|r"):format(W.Money(v * count), C.dim, W.Money(v))) or W.Money(v) end
+    -- 1. the auction house price, and a merchant that sells it cheaper
     if p then
-        lines[#lines + 1] = ("%sRUIN price: %s|r %s%s|r"):format(C.gold, W.Money(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
-        local avg, pct, days = M:Trend(id)
-        if avg and days >= 2 then
-            lines[#lines + 1] = ("%sRUIN 7-day: avg %s  %s|r"):format(C.dim, W.Money(avg), trendText(pct))
-        end
-        if vendor and vendor > 0 then
-            lines[#lines + 1] = (p.p > vendor * SELL_MARGIN) and (C.good .. "Exchange: sell on the auction house|r")
-                or (C.dim .. "Exchange: vendor it (" .. W.Money(vendor) .. ")|r")
-        end
+        lines[#lines + 1] = ("%sAH price:|r %s  %s%s|r"):format(C.white, each(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
+    else
+        lines[#lines + 1] = ("%sAH price:|r %snone yet|r"):format(C.white, C.dim)
+    end
+    if src == "vendor" then
+        lines[#lines + 1] = ("%sVendor:|r %s %sfrom %s|r"):format(C.good, each(vp), C.dim, kind and (kind .. " NPC") or tostring(by))
+    end
+    -- 2. the 7-day average
+    if avg and days >= 2 then
+        lines[#lines + 1] = ("%sAH 7-day avg:|r %s  %s"):format(C.white, each(avg), trendText(pct))
+    end
+    -- 3. where to sell it
+    if p and (not canVendor or p.p > vendor * SELL_MARGIN) then
+        lines[#lines + 1] = ("%sSell on AH:|r %s"):format(C.good, W.Money(p.p * count))
+    elseif canVendor then
+        lines[#lines + 1] = ("%sSell to Vendor:|r %s"):format(C.good, W.Money(vendor * count))
     end
     return lines
 end
 M.PriceLines = priceLines
+
+-- How many are in the stack the tooltip shows: from the item's place in your
+-- bags when the game says, else the bag slot the mouse is over.
+local function tooltipCount(tooltip, data)
+    local CI = rawget(_G, "C_Item")
+    if type(data) == "table" and data.guid and CI and CI.GetItemLocation and CI.GetStackCount then
+        local ok, loc = pcall(CI.GetItemLocation, data.guid)
+        if ok and loc then
+            local ok2, n = pcall(CI.GetStackCount, loc)
+            if ok2 and tonumber(n) then return n end
+        end
+    end
+    local owner = tooltip and tooltip.GetOwner and tooltip:GetOwner()
+    local CC = rawget(_G, "C_Container")
+    if owner and owner.GetBagID and owner.GetID and CC and CC.GetContainerItemInfo then
+        local okb, bag = pcall(owner.GetBagID, owner)
+        local info = okb and bag and CC.GetContainerItemInfo(bag, owner:GetID())
+        if type(info) == "table" and tonumber(info.stackCount) then return info.stackCount end
+    end
+    return 1
+end
+M.TooltipCount = tooltipCount
+
+-- The section sits in a box: a faint gold border with the inside a touch
+-- darker. It's drawn on the tooltip under its text and follows the lines.
+local GOLD_EDGE = { 0.90, 0.72, 0.38, 0.40 }
+local function boxFor(tooltip)
+    local b = tooltip.ruinBox
+    if b then return b end
+    b = {}
+    b.fill = tooltip:CreateTexture(nil, "BORDER", nil, 1)
+    b.fill:SetColorTexture(0, 0, 0, 0.32)
+    local function edge() local t = tooltip:CreateTexture(nil, "BORDER", nil, 2); t:SetColorTexture(unpack(GOLD_EDGE)); return t end
+    b.top, b.bottom, b.left, b.right = edge(), edge(), edge(), edge()
+    b.Hide = function(self) for _, t in ipairs({ self.fill, self.top, self.bottom, self.left, self.right }) do t:Hide() end end
+    b.Show = function(self) for _, t in ipairs({ self.fill, self.top, self.bottom, self.left, self.right }) do t:Show() end end
+    tooltip.ruinBox = b
+    if tooltip.HookScript then
+        tooltip:HookScript("OnTooltipCleared", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
+        tooltip:HookScript("OnHide", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
+    end
+    return b
+end
+
+local function boxLines(tooltip, first, last)
+    local name = tooltip.GetName and tooltip:GetName()
+    local a, z = name and _G[name .. "TextLeft" .. first], name and _G[name .. "TextLeft" .. last]
+    if not (a and z) then return end
+    local b = boxFor(tooltip)
+    b.fill:ClearAllPoints()
+    b.fill:SetPoint("TOPLEFT", a, "TOPLEFT", -5, 5)
+    b.fill:SetPoint("BOTTOMLEFT", z, "BOTTOMLEFT", -5, -5)
+    b.fill:SetPoint("RIGHT", tooltip, "RIGHT", -6, 0)
+    b.top:ClearAllPoints(); b.top:SetPoint("TOPLEFT", b.fill, "TOPLEFT"); b.top:SetPoint("TOPRIGHT", b.fill, "TOPRIGHT"); b.top:SetHeight(1)
+    b.bottom:ClearAllPoints(); b.bottom:SetPoint("BOTTOMLEFT", b.fill, "BOTTOMLEFT"); b.bottom:SetPoint("BOTTOMRIGHT", b.fill, "BOTTOMRIGHT"); b.bottom:SetHeight(1)
+    b.left:ClearAllPoints(); b.left:SetPoint("TOPLEFT", b.fill, "TOPLEFT"); b.left:SetPoint("BOTTOMLEFT", b.fill, "BOTTOMLEFT"); b.left:SetWidth(1)
+    b.right:ClearAllPoints(); b.right:SetPoint("TOPRIGHT", b.fill, "TOPRIGHT"); b.right:SetPoint("BOTTOMRIGHT", b.fill, "BOTTOMRIGHT"); b.right:SetWidth(1)
+    b:Show()
+    tooltip.ruinBoxLines = { first, last }
+end
+M.BoxLines = boxLines
 
 -- A recipe item ("Recipe: Tasty Lion Steak"): what one craft costs, and the
 -- Price per Point at your skill when RUIN can tell. The reagents come from
@@ -1567,8 +1639,9 @@ local function onTooltip(tooltip, data)
         link = select(2, tooltip:GetItem())
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
-    local ok, lines = pcall(priceLines, link)
-    if ok and lines then for _, l in ipairs(lines) do tooltip:AddLine(l) end end
+    if tooltip.ruinBox then tooltip.ruinBox:Hide() end
+    local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data))
+
     local ok3, err = pcall(function()
         local id = tonumber(tostring(link):match("item:(%d+)"))
         local name, _, _, _, class = itemInfo(id)
@@ -1603,6 +1676,14 @@ local function onTooltip(tooltip, data)
         end
         if extra then for _, l in ipairs(extra) do tooltip:AddLine(l) end end
     end)
+    -- the Exchange section last, in its box
+    if ok and lines and #lines > 0 then
+        tooltip:AddLine(" ")
+        local boxFrom = (tooltip.NumLines and tooltip:NumLines() or 0) + 1
+        for _, l in ipairs(lines) do tooltip:AddLine(l) end
+        local boxTo = tooltip.NumLines and tooltip:NumLines() or 0
+        if boxTo >= boxFrom then pcall(boxLines, tooltip, boxFrom, boxTo) end
+    end
     if not ok3 and M.tipDebug then M.tipDebug = false; M:Print("tip debug error: " .. tostring(err)) end
 end
 

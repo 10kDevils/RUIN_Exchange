@@ -8,7 +8,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.5.3 — 2026-11-10
 
-- The vendor line names the kind of merchant and shows both prices: "Vendor: 1s 44c from Trade Goods NPC (1s 88c AH)". The merchant's title is kept when you open its window and shared with RUIN; prices seen before this show the merchant's name until you visit again.
+- Item tooltips end with a RUIN: Exchange section in a box with a faint gold border: the AH price (for the whole stack you're pointing at, with the price each) and how long ago it was seen, a merchant that sells it cheaper ("Vendor: 1s 44c from Trade Goods NPC"), the AH 7-day average, and where to sell the stack: "Sell on AH: ..." or "Sell to Vendor: ...".
+- The vendor line names the kind of merchant: "Vendor: 1s 44c from Trade Goods NPC". The merchant's title is kept when you open its window and shared with RUIN; prices seen before this show the merchant's name until you visit again.
 - Money shows the game's gold, silver and copper icons instead of g, s and c everywhere in Exchange (needs RUIN Core 0.5.5).
 
 ## 0.5.2 — 2026-11-08
