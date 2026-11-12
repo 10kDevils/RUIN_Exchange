@@ -6,7 +6,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
-## 0.6.1 — 2026-11-11
+## 0.7.0 — 2026-11-12
 
 - **A new look, with the rest of the suite.** Exchange's pages take its amber through and through: the open tab's underline, check marks, the bar on a row under the mouse and the edge a button gets when you point at it. Its header carries a drawing of a price chart with the latest price moving along the trend, and Exchange has its own icon (a merchant's scales) on its tab, its header and in the AddOns list. The Add your recipes window wears the same amber.
 - **Security:** shared prices are checked. Another player's auction or vendor price never replaces one you saw yourself lately, an auction price a quarter or four times a recent one is ignored (and kept out of the 7-day average), and a shared vendor price can't undercut a known one by more than reputation could. A craft counts as confirmed only when its crafter logged it (everyone hears the claim) and its customer confirmed it; names are compared in full.
