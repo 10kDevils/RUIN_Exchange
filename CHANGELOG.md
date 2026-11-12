@@ -6,6 +6,10 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.6.1 — 2026-11-11
+
+- The tooltip's recommendation is colored by what it says: Sell to Vendor stays green, Sell on AH is gold, and Craft and Disenchant are red.
+
 ## 0.6.0 — 2026-11-11
 
 - Where to sell now also says **Disenchant** (with the expected value and the likely mat) when what an item breaks into is worth more than selling it, judged only on the mats' value. It uses the classic disenchanting tables by quality and item level, priced from RUIN's AH prices.

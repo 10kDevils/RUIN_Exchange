@@ -29,7 +29,7 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
-local M = R:RegisterModule("Exchange", { version = "0.6.0" })
+local M = R:RegisterModule("Exchange", { version = "0.6.1" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -1636,14 +1636,14 @@ local function priceLines(link, count)
     local craft = not deTotal and bestCraft(id)
     if deTotal and not deMissing and deTotal * count > math.max(netAH or 0, sellVendor) then
         local matName = deMat and (GetItemInfo and GetItemInfo(deMat)) or "enchanting mats"
-        lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.good, W.Money(deTotal * count), C.dim, tostring(matName))
+        lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.bad, W.Money(deTotal * count), C.dim, tostring(matName))
     elseif craft then
         local made = GetItemInfo and GetItemInfo(craft.product) or ("item " .. craft.product)
-        lines[#lines + 1] = ("%sCraft:|r %s"):format(C.good, tostring(made))
+        lines[#lines + 1] = ("%sCraft:|r %s"):format(C.bad, tostring(made))
         lines[#lines + 1] = ("%s(sells ~%s, %s more than its reagents)|r"):format(C.dim, W.Money(craft.value), W.Money(craft.profit))
     elseif p and netAH > 0 and netAH > sellVendor then
         -- worth it after the deposit (at least 1 silver) and the 5% cut
-        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.good, W.Money(p.p * count), C.dim, W.Money(netAH))
+        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.gold, W.Money(p.p * count), C.dim, W.Money(netAH))
     elseif canVendor then
         lines[#lines + 1] = ("%sSell to Vendor:|r %s"):format(C.good, W.Money(vendor * count))
     end
