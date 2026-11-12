@@ -5,7 +5,7 @@
 ## Version: 0.6.1
 ## Dependencies: RUIN_Core
 ## SavedVariables: RUIN_ExchangeDB
-## IconTexture: Interface\Icons\INV_Misc_Coin_02
+## IconTexture: Interface\AddOns\RUIN_Core\Media\BadgeExchange
 ## X-Category: Guild
 ## Category: RUIN Gaming Companion App
 

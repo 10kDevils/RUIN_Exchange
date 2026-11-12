@@ -1232,6 +1232,7 @@ local function buildPrompt()
     prompt:SetPoint("TOP", UIParent, "TOP", 0, -140)
     prompt:SetFrameStrata("DIALOG")
     prompt:SetClampedToScreen(true)
+    if W.Themed then W.Themed(prompt, "Exchange") end
     W.Skin(prompt, "panel", 0.97, "glow")
     prompt:EnableMouse(true)
     prompt:SetMovable(true)
