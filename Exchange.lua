@@ -2148,11 +2148,6 @@ local function buildSearch(page)
         function(v) db.showOffline = v; refreshPage() end)
     ui.offlineCheck:SetPoint("TOPRIGHT", page, "TOPRIGHT", -290, -26)
     ui.offlineCheck.tip = "Also show recipes only offline members know, and offline crafters in each recipe's list"
-    ui.overtimeBtn = W.Cycle(page, 172, { 0, 1, 2, 3, 4, 5 }, function() return tonumber(db.overtime) or 0 end,
-        function(v) db.overtime = v; M.RepaintRecipeCosts(); refreshPage() end, "Working Overtime: ")
-    ui.overtimeBtn.format = function(v) return v .. "/5" end
-    ui.overtimeBtn.tipTitle = "Your Working Overtime rank (Legacy talent): +4% skill-up chance a rank on yellow and green recipes, in Price per Point"
-    ui.overtimeBtn:SetPoint("TOPRIGHT", page, "TOPRIGHT", -96, -24)
 
     ui.addMine = W.Button(page, "Add my recipes", 118, function()
         if InCombatLockdown() then return M:Print("After combat.") end
@@ -2293,6 +2288,11 @@ local function buildLeveling(page)
         end,
         current = function() return ui.prof end, pick = function(v) ui.prof = v; refreshPage() end })
     ui.profPick:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 2)
+    ui.overtimeBtn = W.Cycle(page, 172, { 0, 1, 2, 3, 4, 5 }, function() return tonumber(db.overtime) or 0 end,
+        function(v) db.overtime = v; M.RepaintRecipeCosts(); refreshPage() end, "Working Overtime: ")
+    ui.overtimeBtn.format = function(v) return v .. "/5" end
+    ui.overtimeBtn.tipTitle = "Your Working Overtime rank (Legacy talent): +4% skill-up chance a rank on yellow and green recipes, in Price per Point"
+    ui.overtimeBtn:SetPoint("TOPRIGHT", ui.profPick, "TOPLEFT", -8, 0)
     ui.levelInfo = W.Label(page, "", "GameFontHighlightSmall")
     ui.levelInfo:SetPoint("TOPLEFT", 0, -22)
     ui.levelInfo:SetPoint("RIGHT", page, "RIGHT", -6, 0)
