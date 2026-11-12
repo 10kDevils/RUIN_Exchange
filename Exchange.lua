@@ -45,6 +45,7 @@ local function ahNet(unit, count)
     return math.floor(unit * (count or 1) * (1 - AH_CUT)) - AH_DEPOSIT
 end
 local SKILLUP_CHANCE = { [0] = 1, [1] = 0.75, [2] = 0.25 }        -- orange, yellow, green
+local OVERTIME_PER_RANK = 0.04      -- Working Overtime (Legacy): +4% skill-up chance a rank, 5 ranks
 local DIFFICULTY_NAME = { [0] = "|cffff8040orange|r", [1] = "|cffffff00yellow|r", [2] = "|cff40c040green|r" }
 local CLASSIC_DIFFICULTY = { optimal = 0, medium = 1, easy = 2, trivial = 3 }
 
@@ -531,6 +532,16 @@ local function noteColor(prof, name, diff, skill)
 end
 M.NoteColor = noteColor
 
+-- Working Overtime (a Legacy talent, set in Exchange: RUIN can't read
+-- Legacy talents): its +4% a rank is added on top of a yellow or green
+-- recipe's chance.
+local function overtime(c, diff)
+    local rank = tonumber(db and db.overtime) or 0
+    if rank <= 0 or not c or (diff ~= 1 and diff ~= 2) then return c end
+    return math.min(1, c + OVERTIME_PER_RANK * math.min(rank, 5))
+end
+M.Overtime = overtime
+
 -- chance of a point, and whether it's worked out from known color levels
 local function chanceFor(prof, name, diff, skill)
     if diff == 0 then return 1, true end
@@ -541,10 +552,10 @@ local function chanceFor(prof, name, diff, skill)
     local grey = t and t.x
     if skill and yellow and grey and grey > yellow then
         local c = (grey - skill) / (grey - yellow)
-        if c > 0 and c <= 1 then return c, true end
+        if c > 0 and c <= 1 then return overtime(c, diff), true end
         if c > 1 then return 1, true end
     end
-    return SKILLUP_CHANCE[diff], false
+    return overtime(SKILLUP_CHANCE[diff], diff), false
 end
 M.ChanceFor = chanceFor
 
@@ -624,7 +635,7 @@ function M.LivePlan(plan)
     for _, r in ipairs(plan.list or {}) do
         local cost, missing = craftCost(r.reagents or {})
         local chance, exact = chanceFor(plan.prof, r.name, r.diff, plan.skill)
-        if not chance or chance <= 0 then chance = SKILLUP_CHANCE[r.diff] or 1 end
+        if not chance or chance <= 0 then chance = overtime(SKILLUP_CHANCE[r.diff], r.diff) or 1 end
         list[#list + 1] = { name = r.name, diff = r.diff, cost = cost, missing = #missing, perPoint = cost / chance,
                             reagents = r.reagents, chance = chance, exact = exact, unlearned = r.unlearned }
         for _, rg in ipairs(r.reagents or {}) do if not R.Items.Info(rg[1]) then M.WantName(rg[1]) end end
@@ -1833,7 +1844,7 @@ function M.RecipeLines(itemName, texts)
             else
                 -- RUIN hasn't seen what color it is at your skill: give each
                 lines[#lines + 1] = ("%sPrice per Point:|r %s%s|r orange, %s~%s|r yellow, %s~%s|r green"):format(C.gold,
-                    C.gold, M.ShortMoney(cost), C.gold, M.ShortMoney(cost / SKILLUP_CHANCE[1]), C.gold, M.ShortMoney(cost / SKILLUP_CHANCE[2]))
+                    C.gold, M.ShortMoney(cost), C.gold, M.ShortMoney(cost / overtime(SKILLUP_CHANCE[1], 1)), C.gold, M.ShortMoney(cost / overtime(SKILLUP_CHANCE[2], 2)))
             end
         end
     end
@@ -2137,6 +2148,11 @@ local function buildSearch(page)
         function(v) db.showOffline = v; refreshPage() end)
     ui.offlineCheck:SetPoint("TOPRIGHT", page, "TOPRIGHT", -290, -26)
     ui.offlineCheck.tip = "Also show recipes only offline members know, and offline crafters in each recipe's list"
+    ui.overtimeBtn = W.Cycle(page, 172, { 0, 1, 2, 3, 4, 5 }, function() return tonumber(db.overtime) or 0 end,
+        function(v) db.overtime = v; M.RepaintRecipeCosts(); refreshPage() end, "Working Overtime: ")
+    ui.overtimeBtn.format = function(v) return v .. "/5" end
+    ui.overtimeBtn.tipTitle = "Your Working Overtime rank (Legacy talent): +4% skill-up chance a rank on yellow and green recipes, in Price per Point"
+    ui.overtimeBtn:SetPoint("TOPRIGHT", page, "TOPRIGHT", -96, -24)
 
     ui.addMine = W.Button(page, "Add my recipes", 118, function()
         if InCombatLockdown() then return M:Print("After combat.") end
@@ -2515,6 +2531,12 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     elseif cmd:lower() == "costs" then
         db.pointCosts = db.pointCosts == false
         M:Print("Price per Point in the profession window: " .. (db.pointCosts and "on" or "off"))
+        M.RepaintRecipeCosts()
+        return
+    elseif cmd:lower() == "overtime" then
+        local n = tonumber(rest)
+        if n and n >= 0 and n <= 5 then db.overtime = math.floor(n) end
+        M:Print(("Working Overtime: %d/5 (+%d%% skill-up chance on yellow and green recipes)."):format(tonumber(db.overtime) or 0, (tonumber(db.overtime) or 0) * 4))
         M.RepaintRecipeCosts()
         return
     elseif cmd:lower() == "autoscan" then

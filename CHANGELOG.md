@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.6.1 — 2026-11-11
 
+- **Working Overtime** (the Legacy talent): set your rank (0-5) on the Search page or with /ex overtime <rank>. Its +4% a rank is added on top of a yellow or green recipe's skill-up chance (a green at 25% is 45% at rank 5), in every Price per Point. RUIN can't read Legacy talents, so it's a setting.
 - The price RUIN keeps is the lowest buyout. Clicking into a commodity or an item now reads every listing, not just the first ones (sorted dearest first, the first listing was the highest price). A look that isn't a full scan (a page of results, a browse, another player's share) no longer replaces a lower price seen in the last 6 hours; after that, or with a full scan, the newer price counts.
 - The tooltip's recommendation is colored by what it says: Sell to Vendor stays green, Sell on AH is gold, and Craft and Disenchant are red.
 
