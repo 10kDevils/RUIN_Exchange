@@ -29,6 +29,9 @@ end
 local W = R.Widgets
 local C = W.COLORS
 
+-- What the player lets RUIN share about them (RUIN Core: Settings > Display)
+local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
+
 local M = R:RegisterModule("Exchange", { version = "0.6.1" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
@@ -287,6 +290,7 @@ local function onAuctionShow()
 end
 
 local function shareSession()
+    if not shares("prices") then session = {}; return end
     local flat, n = {}, 0
     local now = GetServerTime()
     for id, p in pairs(session) do
@@ -308,12 +312,21 @@ end
 function M:OnPrices(d, sender)
     if type(d.l) ~= "table" or type(d.t) ~= "number" then return end
     if R.SaneTime and not R:SaneTime(d.t) then return end         -- a future time would win forever
+    local me = UnitName("player")
     for i = 1, math.min(#d.l, 400) - 1, 2 do
         local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
-        if id and p and p >= 0 and p < 1e11 and id > 0 and id == math.floor(id) then
+        if id and p and p > 0 and p < 1e11 and id > 0 and id == math.floor(id) then
             local cur = db.prices[id]
-            if (not cur or (cur.t or 0) < d.t) and not keepsLower(cur, p, d.t) then db.prices[id] = { p = p, t = d.t, by = sender } end
-            noteHistory(id, p, d.t)
+            local age = cur and (d.t - (cur.t or 0)) or math.huge
+            -- another player's share never beats what you saw yourself lately,
+            -- and a price far off a recent one (a quarter of it, or four
+            -- times it) is taken for a mistake or a prank and ignored
+            local mine = cur and cur.by == me and age < FRESH_LOW
+            local wild = cur and cur.p and cur.p > 0 and age < 86400 and (p < cur.p / 4 or p > cur.p * 4)
+            if not wild then
+                if (not cur or (cur.t or 0) < d.t) and not mine and not keepsLower(cur, p, d.t) then db.prices[id] = { p = p, t = d.t, by = sender } end
+                noteHistory(id, p, d.t)
+            end
         end
     end
     if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
@@ -346,12 +359,15 @@ local function buyText(id, count)
     return W.Money(p * (count or 1)) .. (src == "vendor" and (" " .. C.good .. "(vendor)|r") or "")
 end
 
-local function noteVendor(id, p, by, t, kind)
+local function noteVendor(id, p, by, t, kind, shared)
     if not (id and p and p > 0 and p < 1e11) then return false end
     local cur = db.vendor[id]
+    -- another player's share never replaces a price you saw at a merchant
+    -- yourself, nor one it undercuts by more than reputation could (30%)
+    if shared and cur and cur.p and (cur.mine or p < cur.p * 0.7) then return false end
     if cur and cur.p and cur.p < p then return false end     -- keep the cheapest (reputation discounts vary)
     if cur and cur.p == p and (cur.kind or not kind) then return false end
-    db.vendor[id] = { p = p, by = by, kind = kind, t = t or GetServerTime() }
+    db.vendor[id] = { p = p, by = by, kind = kind, t = t or GetServerTime(), mine = (not shared) or nil }
     return true
 end
 
@@ -411,7 +427,7 @@ local function shareVendor()
         if n >= VENDOR_SHARE_MAX then break end
     end
     vendorSeen = {}
-    if n > 0 then M:Send("VPRICES", { l = flat, w = db.lastVendor or who, k = db.lastVendorKind }, "ORG", nil, R.PRIORITY.BULK) end
+    if n > 0 and shares("prices") then M:Send("VPRICES", { l = flat, w = db.lastVendor or who, k = db.lastVendorKind }, "ORG", nil, R.PRIORITY.BULK) end
 end
 
 function M:OnVendorPrices(d, sender)
@@ -420,7 +436,7 @@ function M:OnVendorPrices(d, sender)
     local kind = type(d.k) == "string" and d.k ~= "" and d.k:gsub("|", ""):sub(1, 40) or nil
     for i = 1, math.min(#d.l, VENDOR_SHARE_MAX * 2) - 1, 2 do
         local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
-        if id and id > 0 and id == math.floor(id) then noteVendor(id, p, who, nil, kind) end
+        if id and id > 0 and id == math.floor(id) then noteVendor(id, p, who, nil, kind, true) end
     end
     if M.RepaintRecipeCosts then M.RepaintRecipeCosts() end
 end
@@ -586,7 +602,7 @@ function M.ShareRecipeSkill()
                 if n >= RSKILL_SHARE_MAX then break end
             end
         end
-        if n > 0 then M:Send("RSKILL", { p = prof, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
+        if n > 0 and shares("recipes") then M:Send("RSKILL", { p = prof, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
     end
     rskillChanged = {}
 end
@@ -779,7 +795,7 @@ local function scanCrafts()
     local sig = #list .. ":" .. table.concat(list, "|"):len()
     if lastCraftSig[prof] == sig then return end
     lastCraftSig[prof] = sig
-    M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = ids, q = qs, s = tonumber(skill) }, "ORG", nil, R.PRIORITY.BULK)
+    if shares("recipes") then M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = ids, q = qs, s = tonumber(skill) }, "ORG", nil, R.PRIORITY.BULK) end
     M:Print(("Shared %d %s recipes with RUIN."):format(#list, prof))
 end
 
@@ -1201,7 +1217,9 @@ function M.ShareMine(force)
     if e.skill.Mining and e.profs.Smelting then e.skill.Smelting = e.skill.Mining end
     for prof, list in pairs(e.profs) do
         local m = e.made and e.made[prof]
-        M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q, s = e.skill[prof] }, "ORG", nil, R.PRIORITY.BULK)
+        -- recipes not shared: tell everyone to forget yours
+        if shares("recipes") then M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q, s = e.skill[prof] }, "ORG", nil, R.PRIORITY.BULK)
+        else M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = {} }, "ORG", nil, R.PRIORITY.BULK) end
     end
 end
 

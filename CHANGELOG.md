@@ -8,6 +8,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.6.1 — 2026-11-11
 
+- **Security:** shared prices are checked. Another player's auction or vendor price never replaces one you saw yourself lately, an auction price a quarter or four times a recent one is ignored (and kept out of the 7-day average), and a shared vendor price can't undercut a known one by more than reputation could. A craft counts as confirmed only when its crafter logged it (everyone hears the claim) and its customer confirmed it; names are compared in full.
+- With the What RUIN shares about you switches off (RUIN Core), Exchange doesn't send your prices or recipes; turning recipes off tells everyone to forget yours.
 - **Working Overtime** (the Legacy talent): set your rank (0-5) on the Leveling page or with /ex overtime <rank>. Its +4% a rank is added on top of a yellow or green recipe's skill-up chance (a green at 25% is 45% at rank 5), in every Price per Point. RUIN can't read Legacy talents, so it's a setting.
 - The price RUIN keeps is the lowest buyout. Clicking into a commodity or an item now reads every listing, not just the first ones (sorted dearest first, the first listing was the highest price). A look that isn't a full scan (a page of results, a browse, another player's share) no longer replaces a lower price seen in the last 6 hours; after that, or with a full scan, the newer price counts.
 - The tooltip's recommendation is colored by what it says: Sell to Vendor stays green, Sell on AH is gold, and Craft and Disenchant are red.

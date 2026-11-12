@@ -24,11 +24,14 @@ local ui = { view = "Crafters" }
 local function now() return GetServerTime() end
 local function short(n) return R.Util.ShortName(n or "?") end
 local function me() return R:GetPlayer().name end
+-- full names compared (a short name could belong to someone on another realm)
+local function same(a, b) return R.SameName and R:SameName(a, b) or (short(a):lower() == short(b):lower()) end
 
 local function store()
     db.crafts = type(db.crafts) == "table" and db.crafts or {}
     db.crafts.done = type(db.crafts.done) == "table" and db.crafts.done or {}        -- id -> confirmed craft
     db.crafts.pending = type(db.crafts.pending) == "table" and db.crafts.pending or {} -- id -> waiting for you (or them)
+    db.crafts.claims = type(db.crafts.claims) == "table" and db.crafts.claims or {}   -- id -> a crafter's claim, seen by everyone
     return db.crafts
 end
 
@@ -45,19 +48,36 @@ end
 function History.Log(item, customer, prof, link)
     item, customer = R.Util.Trim(item or ""), R.Util.Trim(customer or "")
     if item == "" or customer == "" then return false, "Which item, and for whom?" end
-    if short(customer):lower() == short(me()):lower() then return false, "Crafts for yourself don't count." end
+    if same(customer, me()) then return false, "Crafts for yourself don't count." end
     local c = clean({ id = newId(), item = item, link = link, cr = me(), cu = customer, prof = prof, t = now() })
     c.mine = true
     store().pending[c.id] = c
     M:Send("CDONE", c, "PEER", customer, R.PRIORITY.NORMAL)
+    -- everyone hears the crafter's claim, so a confirmation counts only for
+    -- a craft its crafter really logged (both have to say it happened)
+    M:Send("CCLAIM", c, "ORG", nil, R.PRIORITY.NORMAL)
     History.Refresh()
     return true
 end
 
+local function onClaim(_, d, sender)
+    local c = clean(d)
+    if not c or not same(c.cr, sender) then return end
+    c.cr = sender
+    local claims = store().claims
+    local n, oldest, oldestId = 0, math.huge, nil
+    for id, x in pairs(claims) do
+        n = n + 1
+        if now() - (x.t or 0) > PENDING_FOR then claims[id] = nil elseif (x.t or 0) < oldest then oldest, oldestId = x.t, id end
+    end
+    if n >= MAX and oldestId then claims[oldestId] = nil end
+    claims[c.id] = c
+end
+
 local function onDone(_, d, sender)
     local c = clean(d)
-    if not c or short(c.cr):lower() ~= short(sender):lower() then return end
-    if short(c.cu):lower() ~= short(me()):lower() then return end
+    if not c or not same(c.cr, sender) then return end
+    if not same(c.cu, me()) then return end
     c.cr = sender
     store().pending[c.id] = c
     M:Toast(("%s says they crafted %s for you. Confirm it on Exchange > History."):format(W.ClassName(sender), c.item))
@@ -79,7 +99,12 @@ end
 
 local function onConfirm(_, d, sender)
     local c = clean(d)
-    if not c or short(c.cu):lower() ~= short(sender):lower() then return end    -- only the customer confirms
+    if not c or not same(c.cu, sender) then return end    -- only the customer confirms
+    -- ...a craft its crafter logged: the claim everyone heard, or one logged here
+    local p = store().pending[c.id]
+    local claim = store().claims[c.id] or (p and p.mine and p)
+    if not (claim and same(claim.cr, c.cr) and same(claim.cu, c.cu) and claim.item == c.item) then return end
+    store().claims[c.id] = nil
     store().done[c.id] = c
     if store().pending[c.id] then
         store().pending[c.id] = nil
@@ -242,4 +267,5 @@ function History.Init(module, edb, internals)
     store()
     M:Listen("CDONE", onDone)
     M:Listen("CCONF", onConfirm)
+    M:Listen("CCLAIM", onClaim)
 end
