@@ -74,14 +74,25 @@ local function noteHistory(id, price, t)
     db.history[id] = h
 end
 
+-- The price RUIN keeps is the lowest buyout: a sighting that isn't the whole
+-- auction house (a page of results, another player's share) only replaces a
+-- lower price once that price is older than FRESH_LOW. Only a full scan,
+-- which sees every listing, replaces a lower price right away.
+local FRESH_LOW = 6 * 3600
+local function keepsLower(cur, p, t)
+    return cur and cur.p and cur.p > 0 and cur.p < p and (t - (cur.t or 0)) < FRESH_LOW
+end
+M.KeepsLower = keepsLower
+
 local function notePrice(id, unit)
     id, unit = tonumber(id), tonumber(unit)
     if not id or not unit or unit <= 0 then return end
     unit = math.floor(unit)
     if not session[id] or unit < session[id] then session[id] = unit end
     local now = GetServerTime()
-    db.prices[id] = { p = session[id], t = now, by = UnitName("player") }
     noteHistory(id, session[id], now)
+    if keepsLower(db.prices[id], session[id], now) then return end
+    db.prices[id] = { p = session[id], t = now, by = UnitName("player") }
 end
 
 -- Average of the last 7 days and the trend against the 7 days before.
@@ -107,7 +118,7 @@ local function trendText(pct)
     return C.dim .. "steady|r"
 end
 
--- Classic-style auction list
+-- Classic-style auction list (one page at a time)
 local function onClassicList()
     if not (GetNumAuctionItems and GetAuctionItemInfo) then return end
     for i = 1, GetNumAuctionItems("list") or 0 do
@@ -128,15 +139,21 @@ end
 local function onCommodity(_, itemID)
     local AH = C_AuctionHouse
     if not (AH and AH.GetCommoditySearchResultInfo and itemID) then return end
-    local r = AH.GetCommoditySearchResultInfo(itemID, 1)        -- results come cheapest first
-    if r and r.unitPrice then notePrice(itemID, r.unitPrice) end
+    -- every listing read, not just the first: the list can be sorted either way
+    local n = AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(itemID) or 1
+    local best
+    for i = 1, math.max(n or 0, 1) do
+        local r = AH.GetCommoditySearchResultInfo(itemID, i)
+        if r and r.unitPrice and r.unitPrice > 0 and (not best or r.unitPrice < best) then best = r.unitPrice end
+    end
+    if best then notePrice(itemID, best) end
 end
 
 local function onItemSearch(_, itemKey)
     local AH = C_AuctionHouse
     if not (AH and AH.GetNumItemSearchResults and type(itemKey) == "table") then return end
     local best
-    for i = 1, math.min(AH.GetNumItemSearchResults(itemKey) or 0, 50) do
+    for i = 1, AH.GetNumItemSearchResults(itemKey) or 0 do      -- all of them: the list can be sorted dearest first
         local r = AH.GetItemSearchResultInfo(itemKey, i)
         local each = r and r.buyoutAmount and r.quantity and r.quantity > 0 and r.buyoutAmount / r.quantity
         if each and each > 0 and (not best or each < best) then best = each end
@@ -294,7 +311,7 @@ function M:OnPrices(d, sender)
         local id, p = tonumber(d.l[i]), tonumber(d.l[i + 1])
         if id and p and p >= 0 and p < 1e11 and id > 0 and id == math.floor(id) then
             local cur = db.prices[id]
-            if not cur or (cur.t or 0) < d.t then db.prices[id] = { p = p, t = d.t, by = sender } end
+            if (not cur or (cur.t or 0) < d.t) and not keepsLower(cur, p, d.t) then db.prices[id] = { p = p, t = d.t, by = sender } end
             noteHistory(id, p, d.t)
         end
     end

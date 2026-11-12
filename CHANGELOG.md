@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.6.1 — 2026-11-11
 
+- The price RUIN keeps is the lowest buyout. Clicking into a commodity or an item now reads every listing, not just the first ones (sorted dearest first, the first listing was the highest price). A look that isn't a full scan (a page of results, a browse, another player's share) no longer replaces a lower price seen in the last 6 hours; after that, or with a full scan, the newer price counts.
 - The tooltip's recommendation is colored by what it says: Sell to Vendor stays green, Sell on AH is gold, and Craft and Disenchant are red.
 
 ## 0.6.0 — 2026-11-11
