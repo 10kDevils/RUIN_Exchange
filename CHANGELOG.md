@@ -6,6 +6,10 @@ Versioning: the third number counts the meaningful changes made since the second
 
 (nothing yet)
 
+## 0.7.1
+
+- **Less memory and a smaller saved file**: price history for items you stopped seeing is cleared at login (it was only trimmed when an item was seen again).
+
 ## 0.7.0 — 2026-11-12
 
 - **A new look, with the rest of the suite.** Exchange's pages take its amber through and through: the open tab's underline, check marks, the bar on a row under the mouse and the edge a button gets when you point at it. Its header carries a drawing of a price chart with the latest price moving along the trend, and Exchange has its own icon (a merchant's scales) on its tab, its header and in the AddOns list. The Add your recipes window wears the same amber.

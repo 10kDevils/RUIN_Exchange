@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.7.0" })
+local M = R:RegisterModule("Exchange", { version = "0.7.1" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -97,6 +97,22 @@ local function notePrice(id, unit)
     noteHistory(id, session[id], now)
     if keepsLower(db.prices[id], session[id], now) then return end
     db.prices[id] = { p = session[id], t = now, by = UnitName("player") }
+end
+
+-- Price history only trims an item's old days when it's seen again: at login,
+-- drop the old days of everything (and items with none left), so items you
+-- stopped seeing don't sit in memory and the saved file for good.
+function M.PruneHistory()
+    if type(db.history) ~= "table" then return 0 end
+    local oldest, dropped = dayKey(GetServerTime()) - HISTORY_DAYS, 0
+    for id, h in pairs(db.history) do
+        if type(h) ~= "table" then db.history[id] = nil
+        else
+            for d in pairs(h) do if type(d) ~= "number" or d < oldest then h[d] = nil end end
+            if next(h) == nil then db.history[id] = nil; dropped = dropped + 1 end
+        end
+    end
+    return dropped
 end
 
 -- Average of the last 7 days and the trend against the 7 days before.
@@ -2460,6 +2476,7 @@ function M:OnEnable()
     if type(RUIN_ExchangeDB) ~= "table" then RUIN_ExchangeDB = {} end
     db = RUIN_ExchangeDB
     for k, v in pairs(DEFAULTS) do if db[k] == nil then db[k] = v end end
+    M.PruneHistory()
 
     self:Listen("PRICES", "OnPrices")
     self:Listen("VPRICES", "OnVendorPrices")
