@@ -115,6 +115,31 @@ function M.PruneHistory()
     return dropped
 end
 
+-- The price to expect on the auction house: the low end of what it has
+-- sold for lately (each of the last 7 days' lowest listing, and today's),
+-- leaving out a mispriced one far below the rest (under 40% of the middle).
+-- Returns that and the current lowest listing.
+function M.ExpectedPrice(id)
+    local cur = db.prices[id]
+    local now = cur and cur.p and cur.p > 0 and cur.p or nil
+    local vals = {}
+    if now then vals[1] = now end
+    local h = db.history[id]
+    if type(h) == "table" then
+        local today = dayKey()
+        for d, v in pairs(h) do
+            if type(d) == "number" and d > today - 7 and type(v) == "number" and v > 0 then vals[#vals + 1] = v end
+        end
+    end
+    if #vals == 0 then return nil, now end
+    table.sort(vals)
+    local mid = vals[math.ceil(#vals / 2)]
+    for _, v in ipairs(vals) do
+        if v >= mid * 0.4 then return v, now end
+    end
+    return vals[1], now
+end
+
 -- Average of the last 7 days and the trend against the 7 days before.
 function M:Trend(id)
     local h = db.history[id]
@@ -1677,9 +1702,12 @@ local function priceLines(link, count)
     if not (p or src == "vendor" or canVendor or deYield(id)) then return nil end
     local lines = { C.gold .. "RUIN: Exchange|r" }
     local function each(v) return count > 1 and (("%s %s(%s each)|r"):format(W.Money(v * count), C.dim, W.Money(v))) or W.Money(v) end
-    -- 1. the auction house price, and a merchant that sells it cheaper
-    if p then
-        lines[#lines + 1] = ("%sAH price:|r %s  %s%s|r"):format(C.white, each(p.p), C.dim, W.Ago(GetServerTime() - (p.t or 0)))
+    -- 1. the auction house price to expect (the low end of recent prices),
+    -- the current lowest listing when it's dearer, and a cheaper merchant
+    local expect = p and M.ExpectedPrice(id) or nil
+    if p and expect then
+        local nowNote = p.p > expect * 1.05 and ("  " .. C.dim .. "now " .. W.Money(p.p) .. "|r") or ""
+        lines[#lines + 1] = ("%sAH price:|r %s  %s%s|r%s"):format(C.white, each(expect), C.dim, W.Ago(GetServerTime() - (p.t or 0)), nowNote)
     else
         lines[#lines + 1] = ("%sAH price:|r %snone yet|r"):format(C.white, C.dim)
     end
@@ -1694,7 +1722,7 @@ local function priceLines(link, count)
     -- selling it; craft it into something when that sells for more than the
     -- reagents would; else the auction house or the vendor
     local deTotal, deMat, _, deMissing = deValue(id)
-    local netAH = p and ahNet(p.p, count) or nil
+    local netAH = expect and ahNet(expect, count) or nil
     local sellVendor = canVendor and vendor * count or 0
     local craft = not deTotal and bestCraft(id)
     if deTotal and not deMissing and deTotal * count > math.max(netAH or 0, sellVendor) then
@@ -1704,9 +1732,9 @@ local function priceLines(link, count)
         local made = GetItemInfo and GetItemInfo(craft.product) or ("item " .. craft.product)
         lines[#lines + 1] = ("%sCraft:|r %s"):format(C.bad, tostring(made))
         lines[#lines + 1] = ("%s(sells ~%s, %s more than its reagents)|r"):format(C.dim, W.Money(craft.value), W.Money(craft.profit))
-    elseif p and netAH > 0 and netAH > sellVendor then
+    elseif expect and netAH > 0 and netAH > sellVendor then
         -- worth it after the deposit (at least 1 silver) and the 5% cut
-        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.gold, W.Money(p.p * count), C.dim, W.Money(netAH))
+        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.gold, W.Money(expect * count), C.dim, W.Money(netAH))
     elseif canVendor then
         lines[#lines + 1] = ("%sSell to Vendor:|r %s"):format(C.good, W.Money(vendor * count))
     end

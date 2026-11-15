@@ -8,6 +8,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.7.1
 
+- **The tooltip's AH price is the low end**: what to expect on the auction house is the lowest of the last 7 days' prices (and today's), leaving out a mispriced listing far below the rest; when the current lowest listing is dearer it's shown as *now*. *Sell on AH* uses it too.
 - **Less memory and a smaller saved file**: price history for items you stopped seeing is cleared at login (it was only trimmed when an item was seen again).
 
 ## 0.7.0 — 2026-11-12
