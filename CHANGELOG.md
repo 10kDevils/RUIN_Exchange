@@ -4,7 +4,10 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
-(nothing yet)
+## 0.8.1
+
+- **Soulbound items are never sent to the auction house.** For a soulbound item (or one that binds when picked up, or a quest item) the tooltip leaves out the AH prices and weighs only what's possible: disenchanting, crafting it into something, or selling it to a vendor, and recommends whichever is worth most. A craft's reagents count at what a vendor pays for the soulbound one. The bag sweep labels soulbound items Disenchant, Craft or Vendor the same way.
+- A craft that makes a soulbound item is valued at its vendor price, not the auction house's.
 
 ## 0.8.0 — 2026-11-15
 

@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.0" })
+local M = R:RegisterModule("Exchange", { version = "0.8.1" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -66,6 +66,15 @@ local function itemInfo(id)
     if not name then R.Items.Request(tonumber(id) or id) end
     return name, link, quality, sell, class, equip
 end
+
+-- Whether an item can never go on the auction house: it binds when picked up
+-- (so it's soulbound once it's yours) or it's a quest item.
+local function cannotTrade(id)
+    if not (GetItemInfo and id) then return false end
+    local bind = select(14, GetItemInfo(id))
+    return bind == 1 or bind == 4
+end
+M.CannotTrade = cannotTrade
 
 ---------------------------------------------------------------------------
 -- Prices and history
@@ -1482,6 +1491,8 @@ local LABELS = {
     ah     = { "Sell (AH)", C.gold },
     vendor = { "Vendor", C.dim },
     check  = { "Check AH", "|cff8ec8ff" },
+    disenchant = { "Disenchant", C.bad },
+    craft  = { "Craft", C.bad },
 }
 
 local function bagItems()
@@ -1517,7 +1528,11 @@ local function classify(it)
     end
     if quality == 0 then return "vendor", "junk" end
     local p = it.id and price(it.id)
-    if it.bound then
+    if it.bound or cannotTrade(it.id) then
+        -- soulbound: the auction house is out, so disenchant, craft or vendor
+        local best, why = M.BoundChoice(it.id, it.count, it.sell)
+        if best == "disenchant" then return "disenchant", "soulbound: the mats are worth " .. why end
+        if best == "craft" then return "craft", "soulbound: craft " .. why end
         return (it.sell > 0) and "vendor" or "keep", "soulbound"
     end
     local n = math.max(1, tonumber(it.count) or 1)
@@ -1539,7 +1554,7 @@ function M:SweepBags()
             out[#out + 1] = it
         end
     end
-    local order = { ah = 1, vendor = 2, check = 3, keep = 4 }
+    local order = { ah = 1, disenchant = 2, craft = 3, vendor = 4, check = 5, keep = 6 }
     table.sort(out, function(a, b)
         if a.label ~= b.label then return order[a.label] < order[b.label] end
         return (a.name or "") < (b.name or "")
@@ -1644,22 +1659,23 @@ M.DisenchantValue = deValue
 local function saleValue(id, n)
     n = n or 1
     local _, _, _, sell = itemInfo(id)
-    local p = price(id)
+    local p = not cannotTrade(id) and price(id) or nil
     local net = p and ahNet(p, n) or nil
     local vend = sell and sell > 0 and sell * n or nil
     if not (net or vend) then return nil end
     return math.max(net or 0, vend or 0)
 end
-local function reagentValue(id, n)
-    -- what the reagents would fetch: the AH less its cut, or the vendor
+local function reagentValue(id, n, bound)
+    -- what the reagents would fetch: the AH less its cut, or the vendor (only
+    -- the vendor for a soulbound one)
     local _, _, _, sell = itemInfo(id)
-    local p = price(id)
+    local p = not (bound or cannotTrade(id)) and price(id) or nil
     local ah = p and math.floor(p * n * (1 - AH_CUT)) or nil
     local vend = sell and sell > 0 and sell * n or nil
     if not (ah or vend) then return nil end
     return math.max(ah or 0, vend or 0)
 end
-local function bestCraft(id)
+local function bestCraft(id, bound)
     local me = R.GetPlayerGUID and db.crafters[R:GetPlayerGUID() or ""]
     if not (me and me.profs) then return nil end
     local best
@@ -1672,7 +1688,7 @@ local function bestCraft(id)
                 local uses, total, ok = 0, 0, true
                 for _, r in ipairs(reagents) do
                     if r[1] == id then uses = r[2] end
-                    local v = reagentValue(r[1], r[2])
+                    local v = reagentValue(r[1], r[2], bound and r[1] == id)
                     if not v then ok = false; break end
                     total = total + v
                 end
@@ -1687,13 +1703,50 @@ local function bestCraft(id)
 end
 M.BestCraft = bestCraft
 
+-- A soulbound item can only be disenchanted, crafted into something or sold
+-- to a vendor. The one worth most for the stack: "disenchant", "craft",
+-- "vendor" or nil, with a short note (the mats' worth, or what to craft).
+function M.BoundChoice(id, count, sell)
+    count = math.max(1, tonumber(count) or 1)
+    sell = (tonumber(sell) or 0) * count
+    local deTotal, deMat, _, deMissing = deValue(id)
+    local de = (deTotal and not deMissing) and deTotal * count or 0
+    local craft = bestCraft(id, true)
+    local craftWorth = craft and (sell + craft.profit * math.max(1, math.floor(count / math.max(1, craft.uses)))) or 0
+    if de > 0 and de > sell and de >= craftWorth then
+        return "disenchant", W.Money(de), de, deMat
+    elseif craft and craftWorth > sell then
+        return "craft", (GetItemInfo and GetItemInfo(craft.product)) or ("item " .. craft.product), craftWorth, craft
+    elseif sell > 0 then
+        return "vendor", W.Money(sell), sell
+    end
+end
+
 -- The RUIN: Exchange section of an item's tooltip, for the stack you're
 -- looking at (count): the auction house price (and a cheaper merchant), the
 -- 7-day average, and whether to sell it on the auction house or to a vendor.
-local function priceLines(link, count)
+local function priceLines(link, count, bound)
     local id = tonumber(tostring(link):match("item:(%d+)"))
     if not id then return nil end
     count = math.max(1, math.floor(tonumber(count) or 1))
+    if bound or cannotTrade(id) then
+        -- soulbound: never the auction house. Disenchant, craft or vendor.
+        local _, _, _, vendor = itemInfo(id)
+        local choice, note, _, extra = M.BoundChoice(id, count, vendor)
+        if not choice then return nil end
+        local lines = { C.gold .. "RUIN: Exchange|r", C.dim .. "Soulbound: can't go on the auction house|r" }
+        if choice == "disenchant" then
+            local matName = extra and (GetItemInfo and GetItemInfo(extra)) or "enchanting mats"
+            lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.bad, note, C.dim, tostring(matName))
+        elseif choice == "craft" then
+            lines[#lines + 1] = ("%sCraft:|r %s"):format(C.bad, tostring(note))
+            lines[#lines + 1] = ("%s(sells ~%s, %s more than vendoring its reagents)|r"):format(C.dim, W.Money(extra.value), W.Money(extra.profit))
+        end
+        if vendor and vendor > 0 then
+            lines[#lines + 1] = ("%s%s|r %s"):format(C.good, choice == "vendor" and "Sell to Vendor:" or "Vendor:", W.Money(vendor * count))
+        end
+        return lines
+    end
     local p = db.prices[id]
     local _, _, _, vendor = itemInfo(id)
     local vp, src, by, kind = buyPrice(id)
@@ -1763,6 +1816,40 @@ local function tooltipCount(tooltip, data)
     return 1
 end
 M.TooltipCount = tooltipCount
+
+-- Whether the item the tooltip shows is soulbound (or bound to the account):
+-- from its place in your bags when the game says, else the tooltip's lines.
+local BOUND_TEXT = {}
+for _, k in ipairs({ "ITEM_SOULBOUND", "ITEM_ACCOUNTBOUND", "ITEM_BNETACCOUNTBOUND", "ITEM_ACCOUNTBOUND_UNTIL_EQUIP" }) do
+    local v = rawget(_G, k)
+    if type(v) == "string" then BOUND_TEXT[v] = true end
+end
+local function tooltipBound(tooltip, data)
+    local CI = rawget(_G, "C_Item")
+    if type(data) == "table" and data.guid and CI and CI.GetItemLocation and CI.IsBound then
+        local ok, loc = pcall(CI.GetItemLocation, data.guid)
+        if ok and loc then
+            local ok2, b = pcall(CI.IsBound, loc)
+            if ok2 and b ~= nil and not (issecretvalue and issecretvalue(b)) then return b and true or false end
+        end
+    end
+    if type(data) == "table" and type(data.lines) == "table" then
+        for _, l in ipairs(data.lines) do
+            local t = type(l) == "table" and l.leftText
+            if type(t) == "string" and not (issecretvalue and issecretvalue(t)) and BOUND_TEXT[t] then return true end
+        end
+    end
+    local name = tooltip and tooltip.GetName and tooltip:GetName()
+    if name then
+        for i = 2, 6 do
+            local fs = _G[name .. "TextLeft" .. i]
+            local t = type(fs) == "table" and fs.GetText and fs:GetText()
+            if type(t) == "string" and not (issecretvalue and issecretvalue(t)) and BOUND_TEXT[t] then return true end
+        end
+    end
+    return false
+end
+M.TooltipBound = tooltipBound
 
 -- The section sits in a box: a faint gold border with the inside a touch
 -- darker. It's drawn on the tooltip under its text and follows the lines.
@@ -1924,7 +2011,7 @@ local function onTooltip(tooltip, data)
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
     if tooltip.ruinBox then tooltip.ruinBox:Hide() end
-    local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data))
+    local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data), M.TooltipBound(tooltip, data))
 
     local ok3, err = pcall(function()
         local id = tonumber(tostring(link):match("item:(%d+)"))
