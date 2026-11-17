@@ -4,7 +4,18 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
-(nothing yet)
+## 0.8.2
+
+- **The tooltip compares what an item is worth each way**, at the bottom: Vendor, Disenchant or Craft (whichever is worth more) and AH (what it nets after the deposit and cut, with what it lists at). The most is green, the least red and the one between amber. A soulbound item has no AH line.
+- **Craft counts everything a recipe takes and looks a step further.** It finds the single most valuable thing your recipes make from the item, through up to three steps (Wool Cloth > Bolt of Woolen Cloth > Greater Adept's Robe). Each step is charged all of the item it uses (three cloth for a bolt) and the other reagents at what they cost to buy, and a product counts at the more of selling it and crafting it on. The line reads like *Craft: ~49s (3 per Bolt of Woolen Cloth > Greater Adept's Robe)*.
+- **Craft and Disenchant use the market's prices** (the low end of the last week, like the AH line) rather than whatever single listing was seen last.
+- **A craft is never suggested when its reagents sell for more than it does**, at any step: everything a recipe takes is counted at the market's price (or a merchant's, when cheaper), and only the craft with the biggest profit is shown.
+- **A stack shows each one's price too** on every line: Vendor, Disenchant or Craft, and AH.
+- **Craft shows its margin**: what to make, then *Margin: +X a craft (Y%): sells for Z, takes W*, the profit of crafting it and selling it on the AH after everything it takes.
+- The AH line is just its value, without the listing prices after it.
+- **A recipe is only priced from its whole reagent list.** A reagent the game hadn't loaded yet used to drop out of the list, so the craft looked far cheaper than it is (Spidersilk Boots from an Iridescent Pearl). Such lists aren't kept now, and the next look at the profession window fills in the whole one.
+- **No lag when a tooltip opens**: the tooltip only looks at the recipes that use its item (it went through every recipe you know), and keeps its sums for a few seconds while the tooltip stays up.
+- The 7-day average is gone from the tooltip, and a merchant who sells the item for less than the AH reads *Buy from vendor*.
 
 ## 0.8.1 — 2026-11-16
 

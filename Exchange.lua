@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.1" })
+local M = R:RegisterModule("Exchange", { version = "0.8.2" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -100,6 +100,7 @@ M.KeepsLower = keepsLower
 local function notePrice(id, unit)
     id, unit = tonumber(id), tonumber(unit)
     if not id or not unit or unit <= 0 then return end
+    M.priceGen = (M.priceGen or 0) + 1      -- remembered tooltip sums are stale now
     unit = math.floor(unit)
     if not session[id] or unit < session[id] then session[id] = unit end
     local now = GetServerTime()
@@ -524,23 +525,29 @@ local function reagentsModern(recipeID)
     if not (C_TradeSkillUI and C_TradeSkillUI.GetRecipeSchematic) then return out end
     local ok, sch = pcall(C_TradeSkillUI.GetRecipeSchematic, recipeID, false)
     if not ok or type(sch) ~= "table" then return out end
+    local complete = true
     for _, slot in ipairs(sch.reagentSlotSchematics or {}) do
         local r = slot.reagents and slot.reagents[1]
-        if r and r.itemID and (slot.required ~= false) then out[#out + 1] = { r.itemID, slot.quantityRequired or 1 } end
+        if slot.required ~= false then
+            if r and r.itemID then out[#out + 1] = { r.itemID, slot.quantityRequired or 1 } else complete = false end
+        end
     end
-    return out
+    return out, complete
 end
 
 local function reagentsClassic(index)
     local out = {}
     if not (GetTradeSkillNumReagents and GetTradeSkillReagentItemLink) then return out end
+    -- a reagent the game hasn't loaded yet has no link: the list is then
+    -- incomplete, and isn't kept (a recipe missing a reagent looks cheap)
+    local complete = true
     for j = 1, GetTradeSkillNumReagents(index) or 0 do
         local link = GetTradeSkillReagentItemLink(index, j)
         local _, _, count = GetTradeSkillReagentInfo(index, j)
         local id = link and tonumber(link:match("item:(%d+)"))
-        if id then out[#out + 1] = { id, count or 1 } end
+        if id then out[#out + 1] = { id, count or 1 } else complete = false end
     end
-    return out
+    return out, complete
 end
 
 -- Cost of one craft from RUIN prices; nil parts are reagents nobody has priced.
@@ -749,15 +756,20 @@ end
 
 -- What every recipe takes, learned or not, by profession and name, so a
 -- trainer's list (which doesn't say) can be priced.
-local function rememberReagents(prof, name, reagents)
-    if not (prof and name and reagents and #reagents > 0) then return end
+local function rememberReagents(prof, name, reagents, complete)
+    if not (prof and name and reagents and #reagents > 0) or complete == false then return end
     db.recipeBook[prof] = db.recipeBook[prof] or {}
-    local flat = {}
+    local had = db.recipeBook[prof][name]
+    -- a whole list replaces one that was missing reagents, never the other way
+    if had and had.ok and #had > #reagents then return end
+    local flat = { ok = complete and true or nil }
     for _, r in ipairs(reagents) do flat[#flat + 1] = { r[1], r[2] } end
     db.recipeBook[prof][name] = flat
+    if M.ForgetRecipes then M.ForgetRecipes() end
 end
 local function rememberRecipe(prof, name, recipeID)
-    if db.recipeBook[prof] and db.recipeBook[prof][name] then return end
+    local had = db.recipeBook[prof] and db.recipeBook[prof][name]
+    if had and had.ok then return end
     rememberReagents(prof, name, reagentsModern(recipeID))
 end
 M.RememberReagents = rememberReagents
@@ -814,7 +826,7 @@ local function scanCrafts()
                 if iid then made[name] = { iid, q } end
                 local diff = CLASSIC_DIFFICULTY[kind]
                 if diff then noteColor(prof, name, diff, skill) end
-                rememberReagents(prof, name, reagentsClassic(i))
+                rememberReagents(prof, name, reagentsClassic(i))     -- (the list, and whether it's whole)
                 if diff and diff < 3 then recipes[#recipes + 1] = { name = name, diff = diff, reagents = reagentsClassic(i) } end
             end
         end
@@ -840,6 +852,7 @@ local function scanCrafts()
     e.skill[prof] = tonumber(skill)
     e.t = GetServerTime()
     db.crafters[me.guid] = e
+    if M.ForgetRecipes then M.ForgetRecipes() end
     refreshPage()
     if M.RefreshScanPrompt then M.RefreshScanPrompt() end
     local sig = #list .. ":" .. table.concat(list, "|"):len()
@@ -1120,7 +1133,7 @@ function M.TrainerText(name, services)
     local reagents = db.recipeBook[sv.prof] and db.recipeBook[sv.prof][name]
     if not reagents then
         reagents = trainerReagents(sv.index)
-        if reagents then rememberReagents(sv.prof, name, reagents) end
+        if reagents then rememberReagents(sv.prof, name, reagents, true) end
     end
     if not reagents then return nil end
     local skill = profSkill(sv.prof)
@@ -1641,12 +1654,24 @@ M.DisenchantYield = deYield
 
 -- Expected value of disenchanting (copper), the most likely mat, whether
 -- that mat is blue or better, and whether some mats had no price yet.
+local deValueNow
+local deMemo, deCount = {}, 0
 local function deValue(id)
+    local now = GetTime and GetTime() or 0
+    local m = deMemo[id]
+    if m and now - m.t < 3 and m.g == M.priceGen then return m[1], m[2], m[3], m[4] end
+    local a, b, c, d = deValueNow(id)
+    deCount = deCount + 1
+    if deCount > 500 then deMemo, deCount = {}, 0 end
+    deMemo[id] = { a, b, c, d, t = now, g = M.priceGen }
+    return a, b, c, d
+end
+function deValueNow(id)
     local yield = deYield(id)
     if not yield then return nil end
     local total, missing, best, bestP = 0, false, nil, -1
     for _, y in ipairs(yield) do
-        local p = price(y[1])
+        local p = M.ExpectedPrice(y[1]) or price(y[1])
         if p then total = total + p * y[2] * y[3] else missing = true end
         if y[2] > bestP then best, bestP = y[1], y[2] end
     end
@@ -1675,33 +1700,143 @@ local function reagentValue(id, n, bound)
     if not (ah or vend) then return nil end
     return math.max(ah or 0, vend or 0)
 end
-local function bestCraft(id, bound)
+-- Which of your recipes use each reagent: built once and rebuilt when your
+-- recipes change (or every minute), so a tooltip only looks at the few
+-- recipes that use its item instead of every recipe you know.
+local craftIndex = { t = -1e9 }
+local function recipesUsing(id)
     local me = R.GetPlayerGUID and db.crafters[R:GetPlayerGUID() or ""]
     if not (me and me.profs) then return nil end
-    local best
-    for prof, list in pairs(me.profs) do
-        local made = me.made and me.made[prof] and me.made[prof].i or {}
-        local book = db.recipeBook[prof] or {}
-        for n, name in ipairs(list) do
-            local product, reagents = made[n], book[name]
-            if product and product > 0 and product ~= id and reagents then
-                local uses, total, ok = 0, 0, true
-                for _, r in ipairs(reagents) do
-                    if r[1] == id then uses = r[2] end
-                    local v = reagentValue(r[1], r[2], bound and r[1] == id)
-                    if not v then ok = false; break end
-                    total = total + v
+    local now = GetTime and GetTime() or 0
+    if craftIndex.me ~= me or craftIndex.book ~= db.recipeBook or now - craftIndex.t > 60 then
+        local idx = {}
+        for prof, list in pairs(me.profs) do
+            local made = me.made and me.made[prof] and me.made[prof].i or {}
+            local makes = me.made and me.made[prof] and me.made[prof].q or {}
+            local book = db.recipeBook[prof] or {}
+            for n, name in ipairs(list) do
+                local product, reagents = made[n], book[name]
+                if product and product > 0 and type(reagents) == "table" then
+                    for _, r in ipairs(reagents) do
+                        if r[1] ~= product then
+                            idx[r[1]] = idx[r[1]] or {}
+                            table.insert(idx[r[1]], { product = product, makes = math.max(1, tonumber(makes[n]) or 1), reagents = reagents })
+                        end
+                    end
                 end
-                local sells = ok and uses > 0 and saleValue(product, 1)
-                if sells and sells > total and (not best or sells - total > best.profit) then
-                    best = { product = product, profit = sells - total, uses = uses, value = sells }
+            end
+        end
+        craftIndex = { t = now, me = me, book = db.recipeBook, idx = idx }
+    end
+    return craftIndex.idx[id]
+end
+M.ForgetRecipes = function() craftIndex.t = -1e9 end
+
+-- What one of an item is worth crafted, at its best: the most valuable thing
+-- your recipes make from it, through as many as three crafting steps (Wool
+-- Cloth into Bolts of Woolen Cloth into Greater Adept's Robes). A recipe is
+-- charged everything it takes: all of this item it uses (two cloth for a
+-- bolt), and the other reagents at what they cost to buy. What the product
+-- is worth is the more of selling it and crafting it on. Returns the worth of
+-- one, and the chain of products, or nil when no craft beats selling it.
+-- Every price here is the market's: the low end of the last week on the
+-- auction house (not one odd listing), the same price the tooltip's AH line
+-- shows. So a craft is only worth it when what it makes sells for more than
+-- everything that goes into it would.
+local CRAFT_DEPTH = 3
+local function market(id)
+    return M.ExpectedPrice(id) or price(id)
+end
+-- what one is worth as it is: the market, or the vendor if he pays more
+local function worthAsIs(id, bound)
+    local _, _, _, sell = itemInfo(id)
+    local p = not (bound or cannotTrade(id)) and market(id) or nil
+    local v = sell and sell > 0 and sell or nil
+    if not (p or v) then return nil end
+    return math.max(p or 0, v or 0)
+end
+-- what the other reagents cost: a merchant or the market, whichever is cheaper
+local function buyCost(id, n)
+    local p = market(id)
+    local v = db.vendor and db.vendor[id] and db.vendor[id].p
+    if v and (not p or v < p) then p = v end
+    if p then return p * n end
+    local w = worthAsIs(id)
+    return w and w * n or nil
+end
+local function unitWorth(id, bound, depth, seen)
+    local base = worthAsIs(id, bound) or 0
+    if depth >= CRAFT_DEPTH or seen[id] then return base, nil end
+    local list = recipesUsing(id)
+    if not list then return base, nil end
+    seen[id] = true
+    local best, chain = base, nil
+    for _, rec in ipairs(list) do
+        if not seen[rec.product] then
+            local uses, others, ok = 0, 0, true
+            for _, r in ipairs(rec.reagents) do
+                if r[1] == id then uses = uses + r[2]
+                else
+                    local c = buyCost(r[1], r[2])
+                    if not c then ok = false; break end
+                    others = others + c
+                end
+            end
+            if ok and uses > 0 then
+                local pw, sub = unitWorth(rec.product, false, depth + 1, seen)
+                local per = (pw * rec.makes - others) / uses
+                if pw > 0 and per > best then
+                    best, chain = per, { rec.product }
+                    for _, x in ipairs(sub or {}) do chain[#chain + 1] = x end
+                    chain.uses, chain.makes, chain.sale, chain.others = uses, rec.makes, pw * rec.makes, others
                 end
             end
         end
     end
-    return best
+    seen[id] = nil
+    return best, chain
 end
+local function bestCraftNow(id, bound)
+    local base = worthAsIs(id, bound) or 0
+    local worth, chain = unitWorth(id, bound, 0, {})
+    if not chain then return nil end
+    -- the margin of one craft: what it sells for, less everything it takes
+    -- (this item too, at what it would sell for as it is)
+    local cost = chain.others + base * chain.uses
+    return { product = chain[1], chain = chain, uses = chain.uses, unit = worth, profit = (worth - base) * chain.uses,
+             sale = chain.sale, cost = cost }
+end
+
+-- Tooltips ask again and again for the same item while it's shown: the
+-- answer is kept for a few seconds.
+local MEMO_SECONDS = 3
+local memo = {}
+local function memoized(kind, id, bound, fn)
+    local now = GetTime and GetTime() or 0
+    local key = kind .. tostring(id) .. (bound and "b" or "")
+    local m = memo[key]
+    if m and now - m.t < MEMO_SECONDS and m.g == M.priceGen then return m.v end
+    local v = fn(id, bound)
+    -- don't let the memo grow: start over now and then
+    memo.count = (memo.count or 0) + 1
+    if memo.count > 500 then memo = { count = 0 } end
+    memo[key] = { v = v, t = now, g = M.priceGen }
+    return v
+end
+local function bestCraft(id, bound) return memoized("c", id, bound, bestCraftNow) end
+M.ForgetMemo = function() memo = {}; deMemo, deCount = {}, 0 end
 M.BestCraft = bestCraft
+
+-- "Bolt of Woolen Cloth > Greater Adept's Robe": what to make, step by step
+function M.ChainText(chain)
+    local t = {}
+    for _, pid in ipairs(chain or {}) do
+        t[#t + 1] = tostring(GetItemInfo and GetItemInfo(pid) or ("item " .. pid))
+    end
+    local s = table.concat(t, " > ")
+    if chain and (chain.uses or 1) > 1 then s = chain.uses .. " per " .. s end
+    return s
+end
 
 -- A soulbound item can only be disenchanted, crafted into something or sold
 -- to a vendor. The one worth most for the stack: "disenchant", "craft",
@@ -1712,85 +1847,90 @@ function M.BoundChoice(id, count, sell)
     local deTotal, deMat, _, deMissing = deValue(id)
     local de = (deTotal and not deMissing) and deTotal * count or 0
     local craft = bestCraft(id, true)
-    local craftWorth = craft and (sell + craft.profit * math.max(1, math.floor(count / math.max(1, craft.uses)))) or 0
+    local craftWorth = craft and math.floor(craft.unit * count) or 0
     if de > 0 and de > sell and de >= craftWorth then
         return "disenchant", W.Money(de), de, deMat
     elseif craft and craftWorth > sell then
-        return "craft", (GetItemInfo and GetItemInfo(craft.product)) or ("item " .. craft.product), craftWorth, craft
+        return "craft", M.ChainText(craft.chain), craftWorth, craft
     elseif sell > 0 then
         return "vendor", W.Money(sell), sell
     end
 end
 
 -- The RUIN: Exchange section of an item's tooltip, for the stack you're
--- looking at (count): the auction house price (and a cheaper merchant), the
--- 7-day average, and whether to sell it on the auction house or to a vendor.
+-- looking at (count): a cheaper merchant, then what the stack is worth to a
+-- vendor, disenchanted or crafted, and on the auction house after its fees,
+-- the most in green, the least in red and the one between in amber.
+local GREEN, AMBER, RED = "|cff5cd973", "|cffffb030", "|cfff26659"
 local function priceLines(link, count, bound)
     local id = tonumber(tostring(link):match("item:(%d+)"))
     if not id then return nil end
     count = math.max(1, math.floor(tonumber(count) or 1))
-    if bound or cannotTrade(id) then
-        -- soulbound: never the auction house. Disenchant, craft or vendor.
-        local _, _, _, vendor = itemInfo(id)
-        local choice, note, _, extra = M.BoundChoice(id, count, vendor)
-        if not choice then return nil end
-        local lines = { C.gold .. "RUIN: Exchange|r", C.dim .. "Soulbound: can't go on the auction house|r" }
-        if choice == "disenchant" then
-            local matName = extra and (GetItemInfo and GetItemInfo(extra)) or "enchanting mats"
-            lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.bad, note, C.dim, tostring(matName))
-        elseif choice == "craft" then
-            lines[#lines + 1] = ("%sCraft:|r %s"):format(C.bad, tostring(note))
-            lines[#lines + 1] = ("%s(sells ~%s, %s more than vendoring its reagents)|r"):format(C.dim, W.Money(extra.value), W.Money(extra.profit))
-        end
-        if vendor and vendor > 0 then
-            lines[#lines + 1] = ("%s%s|r %s"):format(C.good, choice == "vendor" and "Sell to Vendor:" or "Vendor:", W.Money(vendor * count))
-        end
-        return lines
-    end
+    bound = bound or cannotTrade(id)
     local p = db.prices[id]
     local _, _, _, vendor = itemInfo(id)
     local vp, src, by, kind = buyPrice(id)
-    local avg, pct, days = M:Trend(id)
     local canVendor = vendor and vendor > 0
-    if not (p or src == "vendor" or canVendor or deYield(id)) then return nil end
     local lines = { C.gold .. "RUIN: Exchange|r" }
-    local function each(v) return count > 1 and (("%s %s(%s each)|r"):format(W.Money(v * count), C.dim, W.Money(v))) or W.Money(v) end
-    -- 1. the auction house price to expect (the low end of recent prices),
-    -- the current lowest listing when it's dearer, and a cheaper merchant
-    local expect = p and M.ExpectedPrice(id) or nil
-    if p and expect then
-        local nowNote = p.p > expect * 1.05 and ("  " .. C.dim .. "now " .. W.Money(p.p) .. "|r") or ""
-        lines[#lines + 1] = ("%sAH price:|r %s  %s%s|r%s"):format(C.white, each(expect), C.dim, W.Ago(GetServerTime() - (p.t or 0)), nowNote)
-    else
-        lines[#lines + 1] = ("%sAH price:|r %snone yet|r"):format(C.white, C.dim)
-    end
+    -- a merchant who sells it for less than the auction house
     if src == "vendor" then
-        lines[#lines + 1] = ("%sVendor:|r %s %sfrom %s|r"):format(C.good, each(vp), C.dim, kind and (kind .. " NPC") or tostring(by))
+        local each = count > 1 and (" " .. C.dim .. "(" .. W.Money(vp) .. " each)|r") or ""
+        lines[#lines + 1] = ("%sBuy from vendor:|r %s%s %sfrom %s|r"):format(C.white, W.Money(vp * count), each, C.dim, kind and (kind .. " NPC") or tostring(by))
     end
-    -- 2. the 7-day average
-    if avg and days >= 2 then
-        lines[#lines + 1] = ("%sAH 7-day avg:|r %s  %s"):format(C.white, each(avg), trendText(pct))
-    end
-    -- 3. what to do with it: disenchant when the mats are worth more than
-    -- selling it; craft it into something when that sells for more than the
-    -- reagents would; else the auction house or the vendor
+    if bound then lines[#lines + 1] = C.dim .. "Soulbound: can't go on the auction house|r" end
+
+    -- what the stack is worth each way: the vendor, disenchanting or crafting
+    -- (whichever is worth more) and the auction house after its fees
+    local rows = {}
+    if canVendor then rows[#rows + 1] = { label = "Vendor", value = vendor * count } end
     local deTotal, deMat, _, deMissing = deValue(id)
-    local netAH = expect and ahNet(expect, count) or nil
-    local sellVendor = canVendor and vendor * count or 0
-    local craft = not deTotal and bestCraft(id)
-    if deTotal and not deMissing and deTotal * count > math.max(netAH or 0, sellVendor) then
+    local de = (deTotal and not deMissing) and deTotal * count or nil
+    local craft = bestCraft(id, bound)
+    -- the stack's share of what its best craft (or chain of crafts) is worth,
+    -- after every other reagent it takes
+    local craftValue = craft and math.floor(craft.unit * count) or nil
+    if de and (not craftValue or de >= craftValue) then
         local matName = deMat and (GetItemInfo and GetItemInfo(deMat)) or "enchanting mats"
-        lines[#lines + 1] = ("%sDisenchant:|r ~%s %s(%s)|r"):format(C.bad, W.Money(deTotal * count), C.dim, tostring(matName))
-    elseif craft then
-        local made = GetItemInfo and GetItemInfo(craft.product) or ("item " .. craft.product)
-        lines[#lines + 1] = ("%sCraft:|r %s"):format(C.bad, tostring(made))
-        lines[#lines + 1] = ("%s(sells ~%s, %s more than its reagents)|r"):format(C.dim, W.Money(craft.value), W.Money(craft.profit))
-    elseif expect and netAH > 0 and netAH > sellVendor then
-        -- worth it after the deposit (at least 1 silver) and the 5% cut
-        lines[#lines + 1] = ("%sSell on AH:|r %s  %s(nets %s)|r"):format(C.gold, W.Money(expect * count), C.dim, W.Money(netAH))
-    elseif canVendor then
-        lines[#lines + 1] = ("%sSell to Vendor:|r %s"):format(C.good, W.Money(vendor * count))
+        rows[#rows + 1] = { label = "Disenchant", value = de, note = tostring(matName), approx = true }
+    elseif craftValue then
+        rows[#rows + 1] = { label = "Craft", value = craftValue, note = M.ChainText(craft.chain), approx = true }
     end
+    local ahRow
+    if not bound then
+        local expect = p and M.ExpectedPrice(id) or nil
+        if expect then
+            -- what the stack nets after the deposit and cut, at the low end of
+            -- the week's prices
+            ahRow = { label = "AH", value = math.max(0, ahNet(expect, count)) }
+            rows[#rows + 1] = ahRow
+        end
+    end
+    -- the most is green, the least red, the one between amber
+    local sorted = {}
+    for _, r in ipairs(rows) do sorted[#sorted + 1] = r.value end
+    table.sort(sorted)
+    local lo, hi = sorted[1], sorted[#sorted]
+    for _, r in ipairs(rows) do
+        local col = (r.value == hi and GREEN) or (r.value == lo and RED) or AMBER
+        local each = count > 1 and ("  " .. C.dim .. "(" .. W.Money(math.floor(r.value / count + 0.5)) .. " each)|r") or ""
+        r.text = ("%s%s:|r %s%s%s|r%s"):format(C.white, r.label, col, r.approx and "~" or "", W.Money(r.value), each)
+    end
+    for _, r in ipairs(rows) do
+        lines[#lines + 1] = r.text
+        if r.label == "Disenchant" and r.note then
+            lines[#lines + 1] = ("   %sinto %s|r"):format(C.dim, r.note)
+        elseif r.label == "Craft" and craft then
+            -- what to make, and the margin of crafting it and selling it
+            lines[#lines + 1] = ("   %s%s|r"):format(C.dim, M.ChainText(craft.chain))
+            local pct = craft.cost > 0 and math.floor((craft.sale - craft.cost) / craft.cost * 100 + 0.5) or nil
+            lines[#lines + 1] = ("   %sMargin:|r %s+%s|r %sa craft%s: sells for %s, takes %s|r"):format(C.white, GREEN,
+                W.Money(math.floor(craft.sale - craft.cost + 0.5)), C.dim,
+                pct and (" (" .. pct .. "%)") or "", W.Money(math.floor(craft.sale + 0.5)), W.Money(math.floor(craft.cost + 0.5)))
+        end
+    end
+    if not bound and not ahRow then lines[#lines + 1] = ("%sAH:|r %snone yet|r"):format(C.white, C.dim) end
+    if #rows == 0 and not src and bound then return nil end
+    if #rows == 0 and not src and not p and not canVendor then return nil end
     return lines
 end
 M.PriceLines = priceLines
