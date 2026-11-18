@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.2" })
+local M = R:RegisterModule("Exchange", { version = "0.8.3" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -97,16 +97,21 @@ local function keepsLower(cur, p, t)
 end
 M.KeepsLower = keepsLower
 
-local function notePrice(id, unit)
+-- `whole`: the sighting is the auction house's whole answer for that item (a
+-- search of it, its browse row, its commodity list), so it replaces the price
+-- even when it's higher. A page of a list isn't, so it only replaces a lower
+-- price once that one is old (keepsLower).
+local function notePrice(id, unit, whole)
     id, unit = tonumber(id), tonumber(unit)
     if not id or not unit or unit <= 0 then return end
     M.priceGen = (M.priceGen or 0) + 1      -- remembered tooltip sums are stale now
     unit = math.floor(unit)
+    -- the visit's lowest is what gets shared when the auction house closes
     if not session[id] or unit < session[id] then session[id] = unit end
     local now = GetServerTime()
-    noteHistory(id, session[id], now)
-    if keepsLower(db.prices[id], session[id], now) then return end
-    db.prices[id] = { p = session[id], t = now, by = UnitName("player") }
+    noteHistory(id, unit, now)
+    if not whole and keepsLower(db.prices[id], unit, now) then return end
+    db.prices[id] = { p = unit, t = now, by = UnitName("player") }
 end
 
 -- Price history only trims an item's old days when it's seen again: at login,
@@ -128,7 +133,11 @@ end
 -- The price to expect on the auction house: the low end of what it has
 -- sold for lately (each of the last 7 days' lowest listing, and today's),
 -- leaving out a mispriced one far below the rest (under 40% of the middle).
+-- A price seen in the last two hours is the price to expect (unless it's a
+-- mispriced one far below the rest): the auction house is right in front of
+-- you, so the week only matters once that price is old.
 -- Returns that and the current lowest listing.
+local FRESH_NOW = 2 * 3600
 function M.ExpectedPrice(id)
     local cur = db.prices[id]
     local now = cur and cur.p and cur.p > 0 and cur.p or nil
@@ -144,6 +153,7 @@ function M.ExpectedPrice(id)
     if #vals == 0 then return nil, now end
     table.sort(vals)
     local mid = vals[math.ceil(#vals / 2)]
+    if now and (GetServerTime() - (cur.t or 0)) < FRESH_NOW and now >= mid * 0.4 then return now, now end
     for _, v in ipairs(vals) do
         if v >= mid * 0.4 then return v, now end
     end
@@ -186,7 +196,7 @@ end
 local function onBrowse()
     if not (C_AuctionHouse and C_AuctionHouse.GetBrowseResults) then return end
     for _, r in ipairs(C_AuctionHouse.GetBrowseResults() or {}) do
-        if r.itemKey then notePrice(r.itemKey.itemID, r.minPrice) end
+        if r.itemKey then notePrice(r.itemKey.itemID, r.minPrice, true) end
     end
 end
 
@@ -201,7 +211,7 @@ local function onCommodity(_, itemID)
         local r = AH.GetCommoditySearchResultInfo(itemID, i)
         if r and r.unitPrice and r.unitPrice > 0 and (not best or r.unitPrice < best) then best = r.unitPrice end
     end
-    if best then notePrice(itemID, best) end
+    if best then notePrice(itemID, best, true) end
 end
 
 local function onItemSearch(_, itemKey)
@@ -213,7 +223,7 @@ local function onItemSearch(_, itemKey)
         local each = r and r.buyoutAmount and r.quantity and r.quantity > 0 and r.buyoutAmount / r.quantity
         if each and each > 0 and (not best or each < best) then best = each end
     end
-    if best then notePrice(itemKey.itemID, best) end
+    if best then notePrice(itemKey.itemID, best, true) end
 end
 
 -- Full scan: the whole auction house at once (the game allows one every
@@ -721,6 +731,26 @@ function M.LivePlan(plan)
     return list
 end
 
+-- How many of its item one craft of a recipe makes (the middle of a range).
+local function middle(lo, hi)
+    lo, hi = tonumber(lo), tonumber(hi)
+    if not (lo and lo > 0) then return 1 end
+    if not (hi and hi >= lo) then hi = lo end
+    return (lo + hi) / 2
+end
+local function madeCountClassic(i)
+    if not GetTradeSkillNumMade then return 1 end
+    local ok, lo, hi = pcall(GetTradeSkillNumMade, i)
+    return ok and middle(lo, hi) or 1
+end
+local function madeCountModern(id)
+    local S = C_TradeSkillUI and C_TradeSkillUI.GetRecipeSchematic
+    if not S then return 1 end
+    local ok, sch = pcall(S, id, false)
+    if ok and type(sch) == "table" then return middle(sch.quantityMin, sch.quantityMax) end
+    return 1
+end
+
 -- The item a recipe makes: id and quality from its link (nil for enchants).
 local function madeItem(link)
     if type(link) ~= "string" then return nil end
@@ -788,7 +818,7 @@ local function scanCrafts()
                 list[#list + 1] = name
                 if CLASSIC_DIFFICULTY[kind] then noteColor(prof, name, CLASSIC_DIFFICULTY[kind], skill) end
                 local iid, q = madeItem(GetCraftItemLink and GetCraftItemLink(i))
-                if iid then made[name] = { iid, q } end
+                if iid then made[name] = { iid, q, 1 } end
             end
         end
     elseif C_TradeSkillUI and C_TradeSkillUI.GetAllRecipeIDs then
@@ -801,7 +831,7 @@ local function scanCrafts()
             if r and r.learned and r.name then
                 list[#list + 1] = r.name
                 local iid, q = madeItem(recipeLinkModern(id))
-                if iid then made[r.name] = { iid, q } end
+                if iid then made[r.name] = { iid, q, madeCountModern(id) } end
                 if r.relativeDifficulty then noteColor(prof, r.name, r.relativeDifficulty, skill) end
                 if r.relativeDifficulty and r.relativeDifficulty < 3 then
                     recipes[#recipes + 1] = { name = r.name, diff = r.relativeDifficulty, reagents = reagentsModern(id) }
@@ -823,7 +853,7 @@ local function scanCrafts()
             if name and kind ~= "header" then
                 list[#list + 1] = name
                 local iid, q = madeItem(GetTradeSkillItemLink and GetTradeSkillItemLink(i))
-                if iid then made[name] = { iid, q } end
+                if iid then made[name] = { iid, q, madeCountClassic(i) } end
                 local diff = CLASSIC_DIFFICULTY[kind]
                 if diff then noteColor(prof, name, diff, skill) end
                 rememberReagents(prof, name, reagentsClassic(i))     -- (the list, and whether it's whole)
@@ -839,15 +869,15 @@ local function scanCrafts()
     local me = R:GetPlayer()
     -- the made item's id and quality travel beside the names (i, q), so
     -- older RUIN versions still read the list of names
-    local ids, qs = {}, {}
+    local ids, qs, ns = {}, {}, {}
     for n, name in ipairs(list) do
         local m = made[name]
-        ids[n], qs[n] = m and m[1] or 0, m and m[2] or -1
+        ids[n], qs[n], ns[n] = m and m[1] or 0, m and m[2] or -1, m and m[3] or 1
     end
     local e = db.crafters[me.guid] or { name = me.name, guild = me.guild, profs = {} }
     e.profs[prof] = list
     e.made = e.made or {}
-    e.made[prof] = { i = ids, q = qs }
+    e.made[prof] = { i = ids, q = qs, n = ns }
     e.skill = e.skill or {}
     e.skill[prof] = tonumber(skill)
     e.t = GetServerTime()
@@ -1281,7 +1311,7 @@ function M.ShareMine(force)
     for prof, list in pairs(e.profs) do
         local m = e.made and e.made[prof]
         -- recipes not shared: tell everyone to forget yours
-        if shares("recipes") then M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q, s = e.skill[prof] }, "ORG", nil, R.PRIORITY.BULK)
+        if shares("recipes") then M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = list, i = m and m.i, q = m and m.q, n = m and m.n, s = e.skill[prof] }, "ORG", nil, R.PRIORITY.BULK)
         else M:Send("CRAFTS", { g = me.guid, gu = me.guild, p = prof, l = {} }, "ORG", nil, R.PRIORITY.BULK) end
     end
 end
@@ -1381,13 +1411,15 @@ function M:OnCrafts(d, sender)
     if #d.l == 0 then e.skill[d.p] = nil
     elseif skill and skill >= 0 and skill <= 1000 then e.skill[d.p] = math.floor(skill) end
     if type(d.i) == "table" then
-        local ids, qs = {}, {}
+        local ids, qs, ns = {}, {}, {}
         for n = 1, #d.l do
             ids[n] = tonumber(d.i[n]) or 0
             qs[n] = type(d.q) == "table" and tonumber(d.q[n]) or -1
+            local c = type(d.n) == "table" and tonumber(d.n[n]) or 1
+            ns[n] = (c >= 1 and c <= 100) and c or 1
         end
         e.made = e.made or {}
-        e.made[d.p] = { i = ids, q = qs }
+        e.made[d.p] = { i = ids, q = qs, n = ns }
     end
     db.crafters[d.g] = e
 end
@@ -1712,7 +1744,7 @@ local function recipesUsing(id)
         local idx = {}
         for prof, list in pairs(me.profs) do
             local made = me.made and me.made[prof] and me.made[prof].i or {}
-            local makes = me.made and me.made[prof] and me.made[prof].q or {}
+            local makes = me.made and me.made[prof] and me.made[prof].n or {}
             local book = db.recipeBook[prof] or {}
             for n, name in ipairs(list) do
                 local product, reagents = made[n], book[name]

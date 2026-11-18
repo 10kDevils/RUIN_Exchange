@@ -4,6 +4,11 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+## 0.8.3
+
+- **The AH price follows the auction house.** A price you just saw (a search, a browse row, an item's listings) now replaces the saved one even when it's higher; before, the lowest price of the visit stuck even after listings were bought out. A price seen in the last two hours is the one the tooltip uses (the low end of the week applies once it's older), and Craft uses the same price.
+- **Craft counted the wrong number made.** It read the item's quality as how many one craft makes, so a blue item like Spidersilk Boots was treated as three and its margin tripled. It now uses how many the recipe really makes. Open each profession window once to record it.
+
 ## 0.8.2
 
 - **The tooltip compares what an item is worth each way**, at the bottom: Vendor, Disenchant or Craft (whichever is worth more) and AH (what it nets after the deposit and cut, with what it lists at). The most is green, the least red and the one between amber. A soulbound item has no AH line.
