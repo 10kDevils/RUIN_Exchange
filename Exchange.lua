@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.3" })
+local M = R:RegisterModule("Exchange", { version = "0.8.4" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -560,11 +560,25 @@ local function reagentsClassic(index)
     return out, complete
 end
 
+-- What one reagent costs to buy for crafting: the market's price (the low
+-- end of the week, so one dear listing doesn't set it) or a merchant's when
+-- cheaper. Returns the price and where it's from: "vendor", "ah" (the lowest
+-- listing seen lately) or "week" (the low end of the week).
+local function reagentPrice(id)
+    local expect, now = M.ExpectedPrice(id)
+    local ah = expect or price(id)
+    local v = db.vendor and db.vendor[id]
+    if v and v.p and (not ah or v.p < ah) then return v.p, "vendor", v.by end
+    if not ah then return nil end
+    return ah, (now and ah == now) and "ah" or "week"
+end
+M.ReagentPrice = reagentPrice
+
 -- Cost of one craft from RUIN prices; nil parts are reagents nobody has priced.
 local function craftCost(reagents)
     local cost, missing = 0, {}
     for _, r in ipairs(reagents) do
-        local p = buyPrice(r[1])
+        local p = reagentPrice(r[1])
         if p then cost = cost + p * r[2] else missing[#missing + 1] = r[1] end
     end
     return cost, missing
@@ -625,20 +639,24 @@ local function overtime(c, diff)
 end
 M.Overtime = overtime
 
--- chance of a point, and whether it's worked out from known color levels
+-- Chance of a point: the recipe's own chance plus Working Overtime's bonus,
+-- at most 100%. Returns that, whether the recipe's chance is worked out from
+-- known color levels (not the 3-in-4 / 1-in-4 guess), and the recipe's own
+-- chance before the bonus.
 local function chanceFor(prof, name, diff, skill)
-    if diff == 0 then return 1, true end
-    if diff == 3 or diff == nil then return 0, true end
+    if diff == 0 then return 1, true, 1 end
+    if diff == 3 or diff == nil then return 0, true, 0 end
     local t = thresholds(prof, name)
     skill = tonumber(skill)
     local yellow = t and (t.y or (t.o and t.o + 1))
     local grey = t and t.x
+    local base, exact = SKILLUP_CHANCE[diff], false
     if skill and yellow and grey and grey > yellow then
         local c = (grey - skill) / (grey - yellow)
-        if c > 0 and c <= 1 then return overtime(c, diff), true end
-        if c > 1 then return 1, true end
+        if c > 1 then c = 1 end
+        if c > 0 then base, exact = c, true end
     end
-    return overtime(SKILLUP_CHANCE[diff], diff), false
+    return overtime(base, diff), exact, base
 end
 M.ChanceFor = chanceFor
 
@@ -956,6 +974,56 @@ function M.PointText(diff, reagents, prof, name, skill)
     return C.gold .. (exact and "" or "~") .. M.ShortMoney(cost / chance) .. "|r" .. C.dim .. "/pt|r"
 end
 
+-- How a recipe's Price per Point is worked out, as tooltip rows: each
+-- reagent and its price, the cost of one craft, the chance of a point (with
+-- Working Overtime) and the cost divided by it. { { left, right }, ... }
+function M.PointBreakdown(diff, reagents, prof, name, skill)
+    if not reagents or #reagents == 0 then return nil end
+    local rows = {}
+    local now = GetServerTime()
+    local total, missing = 0, false
+    for _, r in ipairs(reagents) do
+        local id, n = r[1], r[2] or 1
+        local iname = (GetItemInfo and GetItemInfo(id)) or ("item " .. id)
+        if not (GetItemInfo and GetItemInfo(id)) then M.WantName(id) end
+        local p, src, by = reagentPrice(id)
+        local left = ("%s%d x %s|r"):format(C.white, n, iname)
+        if p then
+            total = total + p * n
+            local where
+            if src == "vendor" then where = "merchant" .. (by and (" (" .. tostring(by) .. ")") or "")
+            elseif src == "ah" then
+                local t = db.prices[id] and db.prices[id].t
+                local age = t and math.max(0, now - t)
+                local ago = not age and "" or (age < 3600 and (math.floor(age / 60) .. " min ago"))
+                    or (age < 86400 and (math.floor(age / 3600) .. " h ago")) or (math.floor(age / 86400) .. " days ago")
+                where = "AH lowest" .. (ago ~= "" and (", " .. ago) or "")
+            else where = "AH, low end of the week" end
+            rows[#rows + 1] = { left, W.Money(p * n) .. " " .. C.dim .. "(" .. where .. ")|r" }
+        else
+            missing = true
+            rows[#rows + 1] = { left, C.dim .. "no price yet|r" }
+        end
+    end
+    rows[#rows + 1] = { C.gold .. "Cost of one craft|r", missing and (C.dim .. "unknown|r") or W.Money(total) }
+    if diff == nil or diff == 3 then return rows end
+    local chance, exact, base = chanceFor(prof, name, diff, skill)
+    if not chance or chance <= 0 then return rows end
+    local bonus = chance - (base or chance)
+    local pct = function(x) return math.floor(x * 100 + 0.5) .. "%" end
+    local how = exact and "from its color levels" or "the usual guess for its color"
+    if bonus > 0.0001 then
+        rows[#rows + 1] = { C.gold .. "Chance of a point|r", ("%s + %s Working Overtime = %s"):format(pct(base), pct(bonus), pct(chance)) }
+    else
+        rows[#rows + 1] = { C.gold .. "Chance of a point|r", pct(chance) }
+    end
+    rows[#rows + 1] = { C.dim .. "(" .. how .. ")|r", "" }
+    if not missing then
+        rows[#rows + 1] = { C.gold .. "Price per Point|r", ("%s / %s = %s"):format(W.Money(total), pct(chance), W.Money(math.floor(total / chance + 0.5))) }
+    end
+    return rows
+end
+
 -- the open profession and your skill in it
 function M.CurrentProfession(craft)
     if craft and GetCraftDisplaySkillLine then
@@ -974,7 +1042,7 @@ end
 
 local function pointFor(diff, reagents, name, craft)
     local prof, skill = M.CurrentProfession(craft)
-    return M.PointText(diff, reagents, prof, name, skill)
+    return M.PointText(diff, reagents, prof, name, skill), { diff, reagents, prof, name, skill }
 end
 
 local function costLabel(row)
@@ -993,13 +1061,40 @@ local function nameText(row)
     return type(fs) == "table" and fs or nil
 end
 
-local function paintCost(row, text, right)
+-- Hovering a cost shows how it's worked out (M.PointBreakdown). The hover
+-- area passes clicks through to the recipe row.
+local function costHover(row, fs)
+    local hit = row.ruinCostHit
+    if hit or not CreateFrame then return hit end
+    hit = CreateFrame("Frame", nil, row)
+    hit:SetAllPoints(fs)
+    hit:EnableMouse(true)
+    if hit.SetPropagateMouseClicks then hit:SetPropagateMouseClicks(true) end
+    if hit.SetPropagateMouseMotion then hit:SetPropagateMouseMotion(true) end
+    hit:SetScript("OnEnter", function(self)
+        local info = row.ruinCostInfo
+        local rows = info and M.PointBreakdown(info[1], info[2], info[3], info[4], info[5])
+        if not (rows and GameTooltip) then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(tostring(info[4] or "Recipe"), 1, 0.82, 0)
+        for _, r in ipairs(rows) do GameTooltip:AddDoubleLine(r[1], r[2], 1, 1, 1, 1, 1, 1) end
+        GameTooltip:Show()
+    end)
+    hit:SetScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+    row.ruinCostHit = hit
+    return hit
+end
+
+local function paintCost(row, text, right, info)
     local fs = costLabel(row)
     local shown = text ~= nil and db.pointCosts ~= false
     fs:ClearAllPoints()
     fs:SetPoint("RIGHT", row, "RIGHT", right or -4, 0)
     fs:SetText(shown and text or "")
     if shown then fs:Show() else fs:Hide() end
+    row.ruinCostInfo = shown and info or nil
+    local hit = costHover(row, fs)
+    if hit then if shown and info then hit:Show() else hit:Hide() end end
     -- the name (and the "[2]" craftable count after it) end before the cost,
     -- so a long name is cut short ("Enchant Chest - Minor Abso...") instead
     -- of running under it
@@ -1034,8 +1129,9 @@ local function paintModernRow(frame)
     local prof, skill = M.CurrentProfession()
     local diff = info.relativeDifficulty
     if not info.learned and diff == nil then diff = predictDiff(prof, info.name, skill) end
-    local text = M.PointText(diff, reagentsModern(info.recipeID), prof, info.name, skill)
-    paintCost(frame, text or nil, -28)     -- clear of the skill-up number on the right
+    local reagents = reagentsModern(info.recipeID)
+    local text = M.PointText(diff, reagents, prof, info.name, skill)
+    paintCost(frame, text or nil, -28, { diff, reagents, prof, info.name, skill })     -- clear of the skill-up number on the right
 end
 
 local function paintModern()
@@ -1052,8 +1148,9 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, kind = GetTradeSkillInfo(index)
-                local text = name and kind ~= "header" and pointFor(CLASSIC_DIFFICULTY[kind], reagentsClassic(index), name, false)
-                paintCost(b, b:IsShown() and text or nil, -4)
+                local text, info
+                if name and kind ~= "header" then text, info = pointFor(CLASSIC_DIFFICULTY[kind], reagentsClassic(index), name, false) end
+                paintCost(b, b:IsShown() and text or nil, -4, info)
             end
         end
     end
@@ -1063,8 +1160,9 @@ local function paintClassic()
             if b then
                 local index = b:GetID()
                 local name, _, kind = GetCraftInfo(index)
-                local text = name and kind ~= "header" and pointFor(CLASSIC_DIFFICULTY[kind], reagentsCraft(index), name, true)
-                paintCost(b, b:IsShown() and text or nil, -4)
+                local text, info
+                if name and kind ~= "header" then text, info = pointFor(CLASSIC_DIFFICULTY[kind], reagentsCraft(index), name, true) end
+                paintCost(b, b:IsShown() and text or nil, -4, info)
             end
         end
     end
