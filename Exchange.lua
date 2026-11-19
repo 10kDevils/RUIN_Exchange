@@ -2007,7 +2007,7 @@ local function priceLines(link, count, bound)
         local each = count > 1 and (" " .. C.dim .. "(" .. W.Money(vp) .. " each)|r") or ""
         lines[#lines + 1] = ("%sBuy from vendor:|r %s%s %sfrom %s|r"):format(C.white, W.Money(vp * count), each, C.dim, kind and (kind .. " NPC") or tostring(by))
     end
-    if bound then lines[#lines + 1] = C.dim .. "Soulbound: can't go on the auction house|r" end
+    if bound then lines[#lines + 1] = C.dim .. "Binds to you: can't go on the auction house|r" end
 
     -- what the stack is worth each way: the vendor, disenchanting or crafting
     -- (whichever is worth more) and the auction house after its fees
