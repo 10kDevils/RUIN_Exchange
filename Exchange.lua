@@ -2136,8 +2136,24 @@ local function boxFor(tooltip)
     b.Show = function(self) for _, t in ipairs({ self.fill, self.top, self.bottom, self.left, self.right }) do t:Show() end end
     tooltip.ruinBox = b
     if tooltip.HookScript then
-        tooltip:HookScript("OnTooltipCleared", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
+        tooltip:HookScript("OnTooltipCleared", function(self)
+            if self.ruinBox then self.ruinBox:Hide() end
+            self.ruinSpacer = nil
+        end)
         tooltip:HookScript("OnHide", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
+        -- the blank line under the section is only for what another addon
+        -- adds after it: when nothing did, empty it so it takes no room
+        tooltip:HookScript("OnShow", function(self)
+            local n = self.ruinSpacer
+            if not (n and self.NumLines and n == self:NumLines()) then return end
+            local name = self.GetName and self:GetName()
+            local fs = name and _G[name .. "TextLeft" .. n]
+            if fs and fs:GetText() == " " then
+                fs:SetText("")
+                self.ruinSpacer = nil
+                self:Show()
+            end
+        end)
     end
     return b
 end
@@ -2324,6 +2340,9 @@ local function onTooltip(tooltip, data)
         for _, l in ipairs(lines) do tooltip:AddLine(l) end
         local boxTo = tooltip.NumLines and tooltip:NumLines() or 0
         if boxTo >= boxFrom then pcall(boxLines, tooltip, boxFrom, boxTo) end
+        -- room under the box for lines other addons add after it (a drop location)
+        tooltip:AddLine(" ")
+        tooltip.ruinSpacer = tooltip.NumLines and tooltip:NumLines() or nil
     end
     if not ok3 and M.tipDebug then M.tipDebug = false; M:Print("tip debug error: " .. tostring(err)) end
 end

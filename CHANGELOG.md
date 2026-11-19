@@ -7,6 +7,7 @@ Versioning: the third number counts the meaningful changes made since the second
 ## 0.8.4
 
 - **A piece that binds when picked up** now reads *Binds to you: can't go on the auction house* in the tooltip, instead of calling an item you don't own yet soulbound.
+- **Room under the Exchange section** of a tooltip, so a line another addon adds after it (where an item drops) doesn't sit against the box.
 - **Price per Point prices reagents at the market.** Each reagent counts at the low end of the week on the auction house (or a merchant's price when cheaper), so one dear listing no longer makes a recipe look like it costs gold per point.
 - **Price per Point is the cost of one craft divided by your chance of a point**, where the chance is the recipe's own (from its color) plus Working Overtime's bonus set in Exchange, at most 100%.
 - **Hover a recipe's cost per point to see how it's worked out**: each reagent with its price and where the price is from (AH lowest and how long ago, the week's low end, or a merchant), the cost of one craft, the chance of a point with Working Overtime, and the result.
