@@ -4,6 +4,10 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+## 0.8.5
+
+- **Scan & Share button on the auction house.** One click scans the whole auction house and shares every price with the org as soon as the scan is done (not only the 400 that changed most, and not waiting until you close it). The game allows one full scan every 15 minutes: while that runs, the button shares your latest scan instead (the automatic scan on opening counts), then counts down to the next. Sharing goes out in the background behind chat, about a minute for a big auction house.
+
 ## 0.8.4
 
 - **A piece that binds when picked up** now reads *Binds to you: can't go on the auction house* in the tooltip, instead of calling an item you don't own yet soulbound.

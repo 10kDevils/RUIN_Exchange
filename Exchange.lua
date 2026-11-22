@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.4" })
+local M = R:RegisterModule("Exchange", { version = "0.8.5" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -277,10 +277,57 @@ local function finishFullScan(found)
         if not session[e.id] or e.p < session[e.id] then session[e.id] = e.p end
     end
     db.lastFullScan = now
+    M.lastScan = { t = now, found = found }
+    local shareAll = scanning and scanning.shareAll
     scanning = nil
     M.RepaintRecipeCosts()
-    M:Print(("Full scan done: %d prices read (%d new or changed will be shared when you close the auction house)."):format(n, shared))
+    if shareAll then
+        M:Print(("Full scan done: %d prices read."):format(n))
+        M.ShareScan()
+    else
+        M:Print(("Full scan done: %d prices read (%d new or changed will be shared when you close the auction house)."):format(n, shared))
+    end
     refreshPage()
+    if M.UpdateScanButton then M.UpdateScanButton() end
+end
+
+-- Every price from your latest full scan, to the whole org now (the button
+-- on the auction house). The send queue takes about a message a second and
+-- this goes behind chat and everything else, so a big auction house takes a
+-- minute or two to go out, in the background.
+function M.ShareScan()
+    if not shares("prices") then M:Print("Price sharing is off in your RUIN settings."); return 0 end
+    local since = db.lastFullScan
+    if not since then M:Print("Scan the auction house first."); return 0 end
+    local me = UnitName("player")
+    -- what the latest scan found (or, after a reload, the prices you saw since it)
+    local list = {}
+    if M.lastScan and M.lastScan.t == since then
+        for id, p in pairs(M.lastScan.found) do list[id] = p end
+    else
+        for id, e in pairs(db.prices) do
+            if type(e) == "table" and e.by == me and (e.t or 0) >= since - 60 and e.p then list[id] = e.p end
+        end
+    end
+    local flat, n, total = {}, 0, 0
+    for id, p in pairs(list) do
+        do
+            flat[#flat + 1] = id
+            flat[#flat + 1] = p
+            n, total = n + 1, total + 1
+            session[id] = nil               -- going out now, not again on close
+            if n >= PRICE_BATCH then
+                M:Send("PRICES", { t = since, l = flat }, "ORG", nil, R.PRIORITY.BULK)
+                flat, n = {}, 0
+            end
+        end
+    end
+    if n > 0 then M:Send("PRICES", { t = since, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
+    db.sharedScan = since
+    local secs = math.ceil(total / PRICE_BATCH)
+    M:Print(("Sharing %d prices with the org%s."):format(total, secs > 5 and (" (in the background, about " .. (secs >= 90 and (math.ceil(secs / 60) .. " minutes") or (secs .. " seconds")) .. ")") or ""))
+    if M.UpdateScanButton then M.UpdateScanButton() end
+    return total
 end
 
 local function readReplicate()
@@ -316,12 +363,14 @@ local function readReplicate()
             end
         end
         recordMine()
+        scanning.read = i
+        if M.UpdateScanButton then M.UpdateScanButton() end
         if i < scanning.total then C_Timer.After(0, step) else finishFullScan(found) end
     end
     step()
 end
 
-function M.FullScan(quiet)
+function M.FullScan(quiet, shareAll)
     local AH = C_AuctionHouse
     if not (AH and AH.ReplicateItems) then
         if not quiet then M:Print("This client has no full auction house scan.") end
@@ -337,7 +386,7 @@ function M.FullScan(quiet)
         if not quiet then M:Print("Open the auction house first.") end
         return false
     end
-    scanning = { started = GetServerTime(), bags = bagItemIds() }
+    scanning = { started = GetServerTime(), bags = bagItemIds(), shareAll = shareAll }
     M:Print("Scanning the whole auction house...")
     AH.ReplicateItems()
     -- some clients only answer through the event; read it in a moment anyway
@@ -345,8 +394,76 @@ function M.FullScan(quiet)
     return true
 end
 
+-- The button on the auction house: scan the whole of it and share every
+-- price with the org; while the game's 15 minutes run, share the latest scan.
+local scanButton
+function M.ScanState()
+    if scanning then
+        local pct = scanning.total and scanning.total > 0 and math.floor((scanning.read or 0) / scanning.total * 100) or 0
+        return "scanning", ("Scanning... %d%%"):format(pct)
+    end
+    local wait = (db.lastFullScan or 0) + FULL_SCAN_GAP - GetServerTime()
+    if wait <= 0 then return "scan", "Scan & Share" end
+    if db.lastFullScan and db.sharedScan ~= db.lastFullScan then return "share", "Share Prices" end
+    return "wait", ("Next scan %d min"):format(math.ceil(wait / 60))
+end
+
+function M.UpdateScanButton()
+    local b = scanButton
+    if not b then return end
+    local st, label = M.ScanState()
+    b:SetText(label)
+    b:SetEnabled(st == "scan" or st == "share")
+end
+
+local function scanTip(self)
+    if not GameTooltip then return end
+    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
+    GameTooltip:AddLine("RUIN Exchange", 1, 0.82, 0)
+    local st = M.ScanState()
+    if st == "scan" then
+        GameTooltip:AddLine("Scan the whole auction house and share every price with the org.", 1, 1, 1, true)
+    elseif st == "share" then
+        GameTooltip:AddLine("Share every price from your last full scan with the org.", 1, 1, 1, true)
+    elseif st == "wait" then
+        GameTooltip:AddLine("The game allows one full scan every 15 minutes, and your last one is shared.", 1, 1, 1, true)
+    else
+        GameTooltip:AddLine("Reading the auction house; the prices go to the org when it's done.", 1, 1, 1, true)
+    end
+    GameTooltip:AddLine("It takes a moment, and sharing carries on in the background.", 0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+end
+
+function M.ScanButtonClick()
+    local st = M.ScanState()
+    if st == "scan" then M.FullScan(false, true)
+    elseif st == "share" then M.ShareScan() end
+    M.UpdateScanButton()
+end
+
+function M.EnsureScanButton()
+    local host = rawget(_G, "AuctionHouseFrame") or rawget(_G, "AuctionFrame")
+    if scanButton or not host then return scanButton end
+    local b = W.Button(host, "Scan & Share", 128, M.ScanButtonClick)
+    b:SetPoint("BOTTOMRIGHT", host, "TOPRIGHT", -24, 2)
+    b:SetFrameStrata(host:GetFrameStrata() or "MEDIUM")
+    b:HookScript("OnEnter", scanTip)
+    b:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
+    scanButton = b
+    M.scanButton = b
+    -- the countdown keeps itself current while the auction house is open
+    local since = 0
+    b:SetScript("OnUpdate", function(_, elapsed)
+        since = since + (elapsed or 0)
+        if since >= 1 then since = 0; M.UpdateScanButton() end
+    end)
+    M.UpdateScanButton()
+    return b
+end
+
 local function onAuctionShow()
     ahOpen = true
+    pcall(M.EnsureScanButton)
     if db.autoScan ~= false then C_Timer.After(1, function() M.FullScan(true) end) end
 end
 
