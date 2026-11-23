@@ -4,6 +4,10 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+## 0.8.10
+
+- **The auction house tooltip no longer bounces or grows a frame after it shows.** The blank line under the Exchange box is now decided once per item (remembered while you play) and the tooltip is resized in place rather than shown a second time, so a list that rebuilds its tooltip every frame keeps one steady size and position.
+
 ## 0.8.9
 
 - **The auction house is scanned the whole time it's open.** After the full scan (when the game allows one, every 15 minutes), Exchange searches item by item: first the reagents of the crafts you know, then gear you can use, then everything else it has seen, then round again, skipping what you priced in the last 15 minutes. It searches at most once every 1.5 seconds and only when the game's query throttle is ready, only while you're on the browse list, and never for a few seconds after a search of your own, so your results are never swapped out. The full scan's listings are read within 3 ms a frame. Every price read goes to the org, with no cap: new ones every minute while you scan, the rest when you close. (The Scan & Share button is gone; `/ex scan` still asks for a full scan.)

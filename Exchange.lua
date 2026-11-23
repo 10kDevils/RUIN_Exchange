@@ -32,7 +32,7 @@ local C = W.COLORS
 -- What the player lets RUIN share about them (RUIN Core: Settings > Display)
 local function shares(kind) return not (R.Shares and not R:Shares(kind)) end
 
-local M = R:RegisterModule("Exchange", { version = "0.8.9" })
+local M = R:RegisterModule("Exchange", { version = "0.8.10" })
 
 local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, crafters = {}, tooltip = true, history = {}, requests = {}, plans = {} }
 local PRICE_BATCH = 40
@@ -2250,6 +2250,7 @@ M.TooltipBound = tooltipBound
 
 -- The section sits in a box: a faint gold border with the inside a touch
 -- darker. It's drawn on the tooltip under its text and follows the lines.
+M.spacerKnown = {}      -- item link -> true (others add lines under the box) / false (nobody does)
 local GOLD_EDGE = { 0.90, 0.72, 0.38, 0.40 }
 local function boxFor(tooltip)
     local b = tooltip.ruinBox
@@ -2269,18 +2270,34 @@ local function boxFor(tooltip)
         end)
         tooltip:HookScript("OnHide", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
         -- the blank line under the section is only for what another addon
-        -- adds after it: when nothing did, empty it so it takes no room
-        -- (a frame later: a window that sets an item and then adds its own
-        -- lines, like Codex's best-in-slot panel, does so after the show)
+        -- adds after it. When nothing did, it is emptied a frame later so it
+        -- takes no room (a window that sets an item and then adds its own
+        -- lines, like Codex's best-in-slot panel, does so after the show).
+        -- What was learnt is remembered per item (spacerKnown), so a list
+        -- that rebuilds its tooltip every frame, like the auction house,
+        -- builds it the same size each time instead of growing and
+        -- shrinking, and the tooltip is resized in place, not shown again
+        -- (a second Show re-anchors it, which made it jump).
         local function trimSpacer(self)
             local n = self.ruinSpacer
-            if not (n and self.NumLines and n == self:NumLines() and self:IsShown()) then return end
+            if not (n and self.NumLines and self:IsShown()) then return end
+            local link = self.ruinSpacerLink
+            if n ~= self:NumLines() then
+                if link then M.spacerKnown[link] = true end      -- another addon added lines: keep the gap
+                return
+            end
             local name = self.GetName and self:GetName()
             local fs = name and _G[name .. "TextLeft" .. n]
             if fs and fs:GetText() == " " then
+                local h = fs.GetHeight and fs:GetHeight() or 0
                 fs:SetText("")
                 self.ruinSpacer = nil
-                self:Show()
+                if link then M.spacerKnown[link] = false end
+                if h > 0 and self.GetHeight and self.SetHeight then
+                    self:SetHeight(math.max(1, self:GetHeight() - h - 2))
+                else
+                    self:Show()
+                end
             end
         end
         M.TrimSpacer = trimSpacer
@@ -2475,9 +2492,15 @@ local function onTooltip(tooltip, data)
         for _, l in ipairs(lines) do tooltip:AddLine(l) end
         local boxTo = tooltip.NumLines and tooltip:NumLines() or 0
         if boxTo >= boxFrom then pcall(boxLines, tooltip, boxFrom, boxTo) end
-        -- room under the box for lines other addons add after it (a drop location)
-        tooltip:AddLine(" ")
-        tooltip.ruinSpacer = tooltip.NumLines and tooltip:NumLines() or nil
+        -- room under the box for lines other addons add after it (a drop location),
+        -- unless this item's tooltip was seen to get none
+        if M.spacerKnown[link] ~= false then
+            tooltip:AddLine(" ")
+            tooltip.ruinSpacer = tooltip.NumLines and tooltip:NumLines() or nil
+            tooltip.ruinSpacerLink = link
+        else
+            tooltip.ruinSpacer = nil
+        end
     end
     if not ok3 and M.tipDebug then M.tipDebug = false; M:Print("tip debug error: " .. tostring(err)) end
 end
