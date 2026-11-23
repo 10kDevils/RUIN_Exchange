@@ -6,7 +6,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## 0.8.5
 
-- **Scan & Share button on the auction house.** One click scans the whole auction house and shares every price with the org as soon as the scan is done (not only the 400 that changed most, and not waiting until you close it). The game allows one full scan every 15 minutes: while that runs, the button shares your latest scan instead (the automatic scan on opening counts), then counts down to the next. Sharing goes out in the background behind chat, about a minute for a big auction house.
+- **The auction house is scanned the whole time it's open.** After the full scan (when the game allows one, every 15 minutes), Exchange searches item by item: first the reagents of the crafts you know, then gear you can use, then everything else it has seen, then round again, skipping what you priced in the last 15 minutes. It searches at most once every 1.5 seconds and only when the game's query throttle is ready, only while you're on the browse list, and never for a few seconds after a search of your own, so your results are never swapped out. The full scan's listings are read within 3 ms a frame. Every price read goes to the org, with no cap: new ones every minute while you scan, the rest when you close. (The Scan & Share button is gone; `/ex scan` still asks for a full scan.)
+- **Tidier tooltip lines.** What disenchanting gives sits on the same line as its value ("Disenchant: ~89g 99s · Nexus Crystal"), and a soulbound item says "Soulbound: can't be auctioned".
 
 ## 0.8.4
 

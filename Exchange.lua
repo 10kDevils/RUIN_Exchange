@@ -231,9 +231,7 @@ end
 -- last one is old enough; `/ex scan` asks for one.
 local FULL_SCAN_GAP = 15 * 60
 local SCAN_CHUNK = 1500
-local SHARE_AGE = 6 * 3600      -- after a full scan, share prices older than this...
-local SHARE_MOVE = 0.05         -- ...or that moved more than 5%
-local SHARE_MAX = 400           -- at most this many per scan (10 messages)
+local SCAN_BUDGET = 3           -- milliseconds a frame for reading a full scan's listings
 local scanning, ahOpen
 
 -- The items in your bags: their prices come first in a scan.
@@ -252,82 +250,21 @@ end
 M.BagItemIds = bagItemIds
 
 local function finishFullScan(found)
-    local now, n, picks = GetServerTime(), 0, {}
-    local bags = scanning and scanning.bags or {}
+    local now, n = GetServerTime(), 0
     for id, p in pairs(found) do
         n = n + 1
-        local prev = scanning and scanning.before and scanning.before[id] or db.prices[id]
-        local move = prev and prev.p and prev.p > 0 and math.abs(p - prev.p) / prev.p or math.huge
-        local age = prev and (now - (prev.t or 0)) or math.huge
-        if bags[id] then
-            -- yours come first in what's shared too
-            picks[#picks + 1] = { id = id, p = p, score = math.huge }
-        elseif move > SHARE_MOVE or age > SHARE_AGE then
-            picks[#picks + 1] = { id = id, p = p, score = move == math.huge and 1e9 or move + age / SHARE_AGE }
-        end
         db.prices[id] = { p = p, t = now, by = UnitName("player") }
         noteHistory(id, p, now)
-    end
-    -- the send queue manages about one message a second, so share the
-    -- prices RUIN knows least about and leave the rest for the next scan
-    table.sort(picks, function(a, b) return a.score > b.score end)
-    local shared = math.min(#picks, SHARE_MAX)
-    for k = 1, shared do
-        local e = picks[k]
-        if not session[e.id] or e.p < session[e.id] then session[e.id] = e.p end
+        -- every price read goes to the org (in the background, behind chat)
+        if not session[id] or p < session[id] then session[id] = p end
     end
     db.lastFullScan = now
     M.lastScan = { t = now, found = found }
-    local shareAll = scanning and scanning.shareAll
     scanning = nil
     M.RepaintRecipeCosts()
-    if shareAll then
-        M:Print(("Full scan done: %d prices read."):format(n))
-        M.ShareScan()
-    else
-        M:Print(("Full scan done: %d prices read (%d new or changed will be shared when you close the auction house)."):format(n, shared))
-    end
+    M:Print(("Full scan done: %d prices read; sharing them with the org in the background."):format(n))
     refreshPage()
-    if M.UpdateScanButton then M.UpdateScanButton() end
-end
-
--- Every price from your latest full scan, to the whole org now (the button
--- on the auction house). The send queue takes about a message a second and
--- this goes behind chat and everything else, so a big auction house takes a
--- minute or two to go out, in the background.
-function M.ShareScan()
-    if not shares("prices") then M:Print("Price sharing is off in your RUIN settings."); return 0 end
-    local since = db.lastFullScan
-    if not since then M:Print("Scan the auction house first."); return 0 end
-    local me = UnitName("player")
-    -- what the latest scan found (or, after a reload, the prices you saw since it)
-    local list = {}
-    if M.lastScan and M.lastScan.t == since then
-        for id, p in pairs(M.lastScan.found) do list[id] = p end
-    else
-        for id, e in pairs(db.prices) do
-            if type(e) == "table" and e.by == me and (e.t or 0) >= since - 60 and e.p then list[id] = e.p end
-        end
-    end
-    local flat, n, total = {}, 0, 0
-    for id, p in pairs(list) do
-        do
-            flat[#flat + 1] = id
-            flat[#flat + 1] = p
-            n, total = n + 1, total + 1
-            session[id] = nil               -- going out now, not again on close
-            if n >= PRICE_BATCH then
-                M:Send("PRICES", { t = since, l = flat }, "ORG", nil, R.PRIORITY.BULK)
-                flat, n = {}, 0
-            end
-        end
-    end
-    if n > 0 then M:Send("PRICES", { t = since, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
-    db.sharedScan = since
-    local secs = math.ceil(total / PRICE_BATCH)
-    M:Print(("Sharing %d prices with the org%s."):format(total, secs > 5 and (" (in the background, about " .. (secs >= 90 and (math.ceil(secs / 60) .. " minutes") or (secs .. " seconds")) .. ")") or ""))
-    if M.UpdateScanButton then M.UpdateScanButton() end
-    return total
+    if M.StartQueue then M.StartQueue() end
 end
 
 local function readReplicate()
@@ -349,10 +286,14 @@ local function readReplicate()
             db.prices[id] = { p = each, t = now, by = UnitName("player") }
         end
     end
+    local clock = rawget(_G, "debugprofilestop")
     local function step()
         if not scanning then return end
         local stop = math.min(i + SCAN_CHUNK, scanning.total)
+        local t0 = clock and clock()
+        if t0 then stop = scanning.total end
         while i < stop do
+            if t0 and clock() - t0 > SCAN_BUDGET then break end
             -- index 0 based; count is the 3rd value, buyout the 10th, item id the 17th
             local _, _, count, _, _, _, _, _, _, buyout, _, _, _, _, _, _, id = AH.GetReplicateItemInfo(i)
             i = i + 1
@@ -364,13 +305,12 @@ local function readReplicate()
         end
         recordMine()
         scanning.read = i
-        if M.UpdateScanButton then M.UpdateScanButton() end
         if i < scanning.total then C_Timer.After(0, step) else finishFullScan(found) end
     end
     step()
 end
 
-function M.FullScan(quiet, shareAll)
+function M.FullScan(quiet)
     local AH = C_AuctionHouse
     if not (AH and AH.ReplicateItems) then
         if not quiet then M:Print("This client has no full auction house scan.") end
@@ -386,7 +326,7 @@ function M.FullScan(quiet, shareAll)
         if not quiet then M:Print("Open the auction house first.") end
         return false
     end
-    scanning = { started = GetServerTime(), bags = bagItemIds(), shareAll = shareAll }
+    scanning = { started = GetServerTime(), bags = bagItemIds() }
     M:Print("Scanning the whole auction house...")
     AH.ReplicateItems()
     -- some clients only answer through the event; read it in a moment anyway
@@ -394,80 +334,149 @@ function M.FullScan(quiet, shareAll)
     return true
 end
 
--- The button on the auction house: scan the whole of it and share every
--- price with the org; while the game's 15 minutes run, share the latest scan.
-local scanButton
-function M.ScanState()
-    if scanning then
-        local pct = scanning.total and scanning.total > 0 and math.floor((scanning.read or 0) / scanning.total * 100) or 0
-        return "scanning", ("Scanning... %d%%"):format(pct)
+---------------------------------------------------------------------------
+-- Scanning the whole time the auction house is open: after the full scan
+-- (when the game allows one), one item at a time, in this order: the
+-- reagents of crafts you know, then gear you can use, then everything else
+-- RUIN has seen; then round again. Paced to the game's own query throttle
+-- and no faster than one every QUERY_GAP seconds, only while you're on the
+-- browse list, and never right after a search of your own, so your results
+-- are never swapped for RUIN's.
+---------------------------------------------------------------------------
+local QUERY_GAP = 1.5          -- seconds between RUIN's searches, at the fastest
+local USER_QUIET = 6           -- seconds to wait after a search of yours
+local FRESH_SKIP = 15 * 60     -- an item you priced this recently waits for the next round
+local SHARE_EVERY = 60         -- new prices go to the org this often while you scan
+local queue = { list = {}, pos = 1, tier = 0, lastQuery = -999, lastUser = -999, ours = false, lastShare = 0 }
+M.scanQueue = queue
+
+-- the reagents in your recipes
+local function craftReagents()
+    local out = {}
+    for _, book in pairs(db.recipeBook or {}) do
+        for _, reagents in pairs(book) do
+            if type(reagents) == "table" then
+                for _, r in ipairs(reagents) do if type(r) == "table" and tonumber(r[1]) then out[tonumber(r[1])] = true end end
+            end
+        end
     end
-    local wait = (db.lastFullScan or 0) + FULL_SCAN_GAP - GetServerTime()
-    if wait <= 0 then return "scan", "Scan & Share" end
-    if db.lastFullScan and db.sharedScan ~= db.lastFullScan then return "share", "Share Prices" end
-    return "wait", ("Next scan %d min"):format(math.ceil(wait / 60))
+    return out
 end
 
-function M.UpdateScanButton()
-    local b = scanButton
-    if not b then return end
-    local st, label = M.ScanState()
-    b:SetText(label)
-    b:SetEnabled(st == "scan" or st == "share")
+-- gear you could wear: equippable, your level or under, and (with Codex)
+-- of a kind your class uses
+local function usableGear(id)
+    local CI = rawget(_G, "C_Item")
+    local equip = (CI and CI.IsEquippableItem and CI.IsEquippableItem(id)) or (rawget(_G, "IsEquippableItem") and IsEquippableItem(id))
+    if not equip then return false end
+    local _, _, _, _, minLevel = GetItemInfo(id)
+    if (tonumber(minLevel) or 0) > ((UnitLevel and UnitLevel("player")) or 60) then return false end
+    local cx = R.GetModule and R:GetModule("Codex")
+    if cx and cx.CanUse then return cx.CanUse(id) ~= false end
+    return true
 end
 
-local function scanTip(self)
-    if not GameTooltip then return end
-    GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-    GameTooltip:AddLine("RUIN Exchange", 1, 0.82, 0)
-    local st = M.ScanState()
-    if st == "scan" then
-        GameTooltip:AddLine("Scan the whole auction house and share every price with the org.", 1, 1, 1, true)
-    elseif st == "share" then
-        GameTooltip:AddLine("Share every price from your last full scan with the org.", 1, 1, 1, true)
-    elseif st == "wait" then
-        GameTooltip:AddLine("The game allows one full scan every 15 minutes, and your last one is shared.", 1, 1, 1, true)
-    else
-        GameTooltip:AddLine("Reading the auction house; the prices go to the org when it's done.", 1, 1, 1, true)
+-- the next round's list: the three tiers, in order, each without what came before
+function M.BuildScanQueue()
+    local now, me = GetServerTime(), UnitName("player")
+    local seen, list, tiers = {}, {}, { 0, 0, 0 }
+    local function fresh(id)
+        local e = db.prices[id]
+        return e and e.by == me and (now - (e.t or 0)) < FRESH_SKIP
     end
-    GameTooltip:AddLine("It takes a moment, and sharing carries on in the background.", 0.7, 0.7, 0.7, true)
-    GameTooltip:Show()
+    local function add(id, tier)
+        if seen[id] or fresh(id) then return end
+        seen[id] = true
+        list[#list + 1] = id
+        tiers[tier] = tiers[tier] + 1
+    end
+    for id in pairs(craftReagents()) do add(id, 1) end
+    local all = {}
+    for id in pairs(db.prices) do all[#all + 1] = id end
+    if M.lastScan and M.lastScan.found then for id in pairs(M.lastScan.found) do if not db.prices[id] then all[#all + 1] = id end end end
+    table.sort(all)
+    for _, id in ipairs(all) do if not seen[id] and usableGear(id) then add(id, 2) end end
+    for _, id in ipairs(all) do add(id, 3) end
+    queue.list, queue.pos, queue.tiers = list, 1, tiers
+    return list, tiers
 end
 
-function M.ScanButtonClick()
-    local st = M.ScanState()
-    if st == "scan" then M.FullScan(false, true)
-    elseif st == "share" then M.ShareScan() end
-    M.UpdateScanButton()
+local function onBrowseList()
+    local f = rawget(_G, "AuctionHouseFrame")
+    if not (f and f.IsShown and f:IsShown()) then return false end
+    local modes = rawget(_G, "AuctionHouseFrameDisplayMode")
+    if f.GetDisplayMode and modes and modes.Buy then return f:GetDisplayMode() == modes.Buy end
+    return true
 end
 
-function M.EnsureScanButton()
-    local host = rawget(_G, "AuctionHouseFrame") or rawget(_G, "AuctionFrame")
-    if scanButton or not host then return scanButton end
-    local b = W.Button(host, "Scan & Share", 128, M.ScanButtonClick)
-    b:SetPoint("BOTTOMRIGHT", host, "TOPRIGHT", -24, 2)
-    b:SetFrameStrata(host:GetFrameStrata() or "MEDIUM")
-    b:HookScript("OnEnter", scanTip)
-    b:HookScript("OnLeave", function() if GameTooltip then GameTooltip:Hide() end end)
-    scanButton = b
-    M.scanButton = b
-    -- the countdown keeps itself current while the auction house is open
-    local since = 0
-    b:SetScript("OnUpdate", function(_, elapsed)
-        since = since + (elapsed or 0)
-        if since >= 1 then since = 0; M.UpdateScanButton() end
-    end)
-    M.UpdateScanButton()
-    return b
+-- one step: send the next search if the game, you and the clock all allow
+function M.QueueStep()
+    local AH = C_AuctionHouse
+    if not (ahOpen and AH and AH.SendSearchQuery and AH.MakeItemKey) or scanning then return end
+    local now = GetTime()
+    if now - queue.lastQuery < QUERY_GAP or now - queue.lastUser < USER_QUIET then return end
+    if AH.IsThrottledMessageSystemReady and not AH.IsThrottledMessageSystemReady() then return end
+    if not onBrowseList() then return end
+    if queue.pos > #queue.list then M.BuildScanQueue() end
+    local id = queue.list[queue.pos]
+    if not id then return end
+    queue.pos = queue.pos + 1
+    local ok, key = pcall(AH.MakeItemKey, id)
+    if not ok or not key then return end
+    queue.lastQuery = now
+    queue.ours = true
+    pcall(AH.SendSearchQuery, key, {}, false)
+    queue.ours = false
+    queue.sent = (queue.sent or 0) + 1
+end
+
+-- while the auction house is open: a step a little faster than the gap,
+-- and what's new shared every minute
+local ticker
+function M.StartQueue()
+    if ticker or not C_Timer then return end
+    queue.lastShare = GetTime()
+    local function tick()
+        if not ahOpen then ticker = nil; return end
+        M.QueueStep()
+        if GetTime() - queue.lastShare >= SHARE_EVERY then
+            queue.lastShare = GetTime()
+            if M.ShareSession then M.ShareSession(true) end
+        end
+        C_Timer.After(0.5, tick)
+    end
+    ticker = true
+    C_Timer.After(0.5, tick)
+end
+
+-- a search of yours pauses RUIN's for a few seconds
+local hookedAH = {}
+local function hookUserSearches()
+    local AH = C_AuctionHouse
+    if not (AH and hooksecurefunc) then return end
+    for _, fn in ipairs({ "SendBrowseQuery", "SendSearchQuery", "SendSellSearchQuery", "RefreshCommoditySearchResults", "RefreshItemSearchResults" }) do
+        local f = AH[fn]
+        if type(f) == "function" and hookedAH[fn] ~= f then
+            hookedAH[fn] = f
+            pcall(hooksecurefunc, AH, fn, function() if not queue.ours then queue.lastUser = GetTime() end end)
+            hookedAH[fn] = AH[fn]
+        end
+    end
 end
 
 local function onAuctionShow()
     ahOpen = true
-    pcall(M.EnsureScanButton)
-    if db.autoScan ~= false then C_Timer.After(1, function() M.FullScan(true) end) end
+    hookUserSearches()
+    queue.pos, queue.list = 1, {}
+    if db.autoScan ~= false then
+        C_Timer.After(1, function()
+            -- the full scan when the game allows one; the item by item scan either way
+            if not M.FullScan(true) then M.StartQueue() end
+        end)
+    end
 end
 
-local function shareSession()
+local function shareSession(quiet)
     if not shares("prices") then session = {}; return end
     local flat, n = {}, 0
     local now = GetServerTime()
@@ -483,9 +492,10 @@ local function shareSession()
     if n > 0 then M:Send("PRICES", { t = now, l = flat }, "ORG", nil, R.PRIORITY.BULK) end
     local count = 0
     for _ in pairs(session) do count = count + 1 end
-    if count > 0 then M:Print(("Shared %d prices with RUIN."):format(count)) end
+    if count > 0 and not quiet then M:Print(("Shared %d prices with RUIN."):format(count)) end
     session = {}
 end
+M.ShareSession = shareSession
 
 function M:OnPrices(d, sender)
     if type(d.l) ~= "table" or type(d.t) ~= "number" then return end
@@ -2124,7 +2134,7 @@ local function priceLines(link, count, bound)
         local each = count > 1 and (" " .. C.dim .. "(" .. W.Money(vp) .. " each)|r") or ""
         lines[#lines + 1] = ("%sBuy from vendor:|r %s%s %sfrom %s|r"):format(C.white, W.Money(vp * count), each, C.dim, kind and (kind .. " NPC") or tostring(by))
     end
-    if bound then lines[#lines + 1] = C.dim .. "Binds to you: can't go on the auction house|r" end
+    if bound then lines[#lines + 1] = C.dim .. "Soulbound: can't be auctioned|r" end
 
     -- what the stack is worth each way: the vendor, disenchanting or crafting
     -- (whichever is worth more) and the auction house after its fees
@@ -2160,13 +2170,13 @@ local function priceLines(link, count, bound)
     for _, r in ipairs(rows) do
         local col = (r.value == hi and GREEN) or (r.value == lo and RED) or AMBER
         local each = count > 1 and ("  " .. C.dim .. "(" .. W.Money(math.floor(r.value / count + 0.5)) .. " each)|r") or ""
-        r.text = ("%s%s:|r %s%s%s|r%s"):format(C.white, r.label, col, r.approx and "~" or "", W.Money(r.value), each)
+        -- what disenchanting gives, on the same line as what it's worth
+        local into = (r.label == "Disenchant" and r.note) and ("  " .. C.dim .. "· " .. r.note .. "|r") or ""
+        r.text = ("%s%s:|r %s%s%s|r%s%s"):format(C.white, r.label, col, r.approx and "~" or "", W.Money(r.value), each, into)
     end
     for _, r in ipairs(rows) do
         lines[#lines + 1] = r.text
-        if r.label == "Disenchant" and r.note then
-            lines[#lines + 1] = ("   %sinto %s|r"):format(C.dim, r.note)
-        elseif r.label == "Craft" and craft then
+        if r.label == "Craft" and craft then
             -- what to make, and the margin of crafting it and selling it
             lines[#lines + 1] = ("   %s%s|r"):format(C.dim, M.ChainText(craft.chain))
             local pct = craft.cost > 0 and math.floor((craft.sale - craft.cost) / craft.cost * 100 + 0.5) or nil
