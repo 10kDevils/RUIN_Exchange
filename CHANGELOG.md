@@ -4,6 +4,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+- **Crafters summary fits**: in Find: Crafters the summary line keeps just the price and crafter counts, so it is no longer cut off mid-sentence beside Offline crafters and Add my recipes.
+
 ## 0.8.10
 
 - **The auction house tooltip no longer bounces or grows a frame after it shows.** The blank line under the Exchange box is now decided once per item (remembered while you play) and the tooltip is resized in place rather than shown a second time, so a list that rebuilds its tooltip every frame keeps one steady size and position.

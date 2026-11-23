@@ -2986,8 +2986,11 @@ local function buildPage(panel)
             for _, p in pairs(db.prices) do prices = prices + 1; newest = math.max(newest, p.t or 0) end
             for _ in pairs(db.crafters) do crafters = crafters + 1 end
             ui.summary:SetWordWrap(false)
-            ui.summary:SetText(("%s%d prices known (newest %s) · %d crafters listed. Browse the auction house or open a profession to add yours.|r")
-                :format(C.dim, prices, newest > 0 and W.Ago(GetServerTime() - newest) or "never", crafters))
+            -- in Crafters mode the line shares its row with Offline crafters / Add my recipes,
+            -- so it keeps just the counts there (the empty list says how to add yours)
+            ui.summary:SetText(("%s%d prices known (newest %s) · %d crafters listed.%s|r")
+                :format(C.dim, prices, newest > 0 and W.Ago(GetServerTime() - newest) or "never", crafters,
+                    ui.mode == "Crafters" and "" or " Browse the auction house or open a profession to add yours."))
             ui.profBtn:SetShown(ui.mode == "Crafters")
             ui.heads:SetShown(ui.mode == "Crafters")
             local need = (ui.mode == "Crafters") and M.NeedsScan() or {}
