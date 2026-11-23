@@ -89,7 +89,7 @@ end
 function Watch.Build(page)
     local h = W.Header(page, "Watch list")
     h:SetPoint("TOPLEFT", 0, -2)
-    ui.sub = W.Label(page, C.dim .. "Exchange tells you when one comes up at or under your limit, from your scans or another RUIN member's.|r",
+    ui.sub = W.Label(page, C.dim .. "Told when one comes up at or under your limit.|r",
         "GameFontHighlightSmall")
     ui.sub:SetPoint("TOPLEFT", 0, -24)
     ui.sub:SetPoint("RIGHT", page, "RIGHT", -300, 0)
