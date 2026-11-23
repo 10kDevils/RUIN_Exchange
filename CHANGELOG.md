@@ -4,6 +4,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+- **Watch list.** A new Watch tab holds items you want to buy, each with the most you'll pay. *Add my Best in Slot* fills it from RUIN Codex (the pieces that can be traded, with today's price as the limit), or shift-click any item into the box (or `/exchange watch <item> <gold>`). When a price at or under your limit comes in, from your own auction house visit or one another RUIN member shares, Exchange tells you who saw it and for how much (once an hour per item).
+
 - **Crafters summary fits**: in Find: Crafters the summary line keeps just the price and crafter counts, so it is no longer cut off mid-sentence beside Offline crafters and Add my recipes.
 
 ## 0.8.10

@@ -11,4 +11,5 @@
 
 Exchange.lua
 Treasury.lua
+Watch.lua
 History.lua

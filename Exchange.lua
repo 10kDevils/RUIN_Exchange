@@ -110,6 +110,7 @@ local function notePrice(id, unit, whole)
     if not session[id] or unit < session[id] then session[id] = unit end
     local now = GetServerTime()
     noteHistory(id, unit, now)
+    if ns.Watch then ns.Watch.Seen(id, unit, UnitName("player")) end
     if not whole and keepsLower(db.prices[id], unit, now) then return end
     db.prices[id] = { p = unit, t = now, by = UnitName("player") }
 end
@@ -514,6 +515,7 @@ function M:OnPrices(d, sender)
             if not wild then
                 if (not cur or (cur.t or 0) < d.t) and not mine and not keepsLower(cur, p, d.t) then db.prices[id] = { p = p, t = d.t, by = sender } end
                 noteHistory(id, p, d.t)
+                if ns.Watch then ns.Watch.Seen(id, p, sender) end
             end
         end
     end
@@ -2958,7 +2960,7 @@ end
 -- For the Treasury and History tabs (Treasury.lua, History.lua).
 ns.ExchangeInternals = { canICraft = function(name) return canICraft(name) end, refresh = function() refreshPage() end }
 
-local TAB_NAMES = { "Search", "Requests", "History", "Leveling", "Bags", "Treasury" }
+local TAB_NAMES = { "Search", "Watch", "Requests", "History", "Leveling", "Bags", "Treasury" }
 local TAB = {}
 for i, n in ipairs(TAB_NAMES) do TAB[n] = i end
 
@@ -2966,6 +2968,7 @@ local function buildPage(panel)
     ui.panel = panel
     ui.tabs = W.SubTabs(panel, TAB_NAMES, function() refreshPage() end)
     buildSearch(ui.tabs.pages[TAB.Search])
+    ns.Watch.Build(ui.tabs.pages[TAB.Watch])
     buildRequests(ui.tabs.pages[TAB.Requests])
     ns.History.Build(ui.tabs.pages[TAB.History])
     buildLeveling(ui.tabs.pages[TAB.Leveling])
@@ -3004,6 +3007,8 @@ local function buildPage(panel)
                 ui.summary:SetText(("%s%d prices known · %d item names still loading, so a search may miss them for a moment.|r")
                     :format(C.dim, prices, ui.unnamed))
             end
+        elseif tab == TAB.Watch then
+            ns.Watch.Refresh()
         elseif tab == TAB.Requests then
             ui.reqList:SetItems(reqs)
         elseif tab == TAB.Leveling then
@@ -3052,6 +3057,7 @@ function M:OnEnable()
     self:Listen("ASK", "OnAsk")
     self:AddTab("Exchange", buildPage)
     ns.Treasury.Init(self, db)
+    ns.Watch.Init(self, db)
     ns.History.Init(self, db, ns.ExchangeInternals)
     -- Guild > People "By profession" (RUIN Core 0.4.3)
     if R.AddProfessionSource then
@@ -3139,6 +3145,9 @@ SlashCmdList.RUINEXCHANGE = function(msg)
         if n and n >= 0 and n <= 5 then db.overtime = math.floor(n) end
         M:Print(("Working Overtime: %d/5 (+%d%% skill-up chance on yellow and green recipes)."):format(tonumber(db.overtime) or 0, (tonumber(db.overtime) or 0) * 4))
         M.RepaintRecipeCosts()
+        return
+    elseif cmd:lower() == "watch" then
+        ns.Watch.Slash(rest)
         return
     elseif cmd:lower() == "autoscan" then
         db.autoScan = db.autoScan == false
