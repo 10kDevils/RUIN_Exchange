@@ -2270,9 +2270,11 @@ local function boxFor(tooltip)
         tooltip:HookScript("OnHide", function(self) if self.ruinBox then self.ruinBox:Hide() end end)
         -- the blank line under the section is only for what another addon
         -- adds after it: when nothing did, empty it so it takes no room
-        tooltip:HookScript("OnShow", function(self)
+        -- (a frame later: a window that sets an item and then adds its own
+        -- lines, like Codex's best-in-slot panel, does so after the show)
+        local function trimSpacer(self)
             local n = self.ruinSpacer
-            if not (n and self.NumLines and n == self:NumLines()) then return end
+            if not (n and self.NumLines and n == self:NumLines() and self:IsShown()) then return end
             local name = self.GetName and self:GetName()
             local fs = name and _G[name .. "TextLeft" .. n]
             if fs and fs:GetText() == " " then
@@ -2280,6 +2282,12 @@ local function boxFor(tooltip)
                 self.ruinSpacer = nil
                 self:Show()
             end
+        end
+        M.TrimSpacer = trimSpacer
+        tooltip:HookScript("OnShow", function(self)
+            if not self.ruinSpacer then return end
+            if C_Timer and C_Timer.After then C_Timer.After(0, function() trimSpacer(self) end)
+            else trimSpacer(self) end
         end)
     end
     return b
