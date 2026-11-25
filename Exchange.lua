@@ -2523,6 +2523,7 @@ function M.PriceCrate(tooltip)
     local first = tname and _G[tname .. "TextLeft1"]
     local title = plain(first and first.GetText and first:GetText())
     if not (type(title) == "string" and title:find("^Waylaid Crate")) then return end
+    if M.tipDebug then M.CrateDebug(tooltip, tname) end
     local widest = 0
     for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
         local fs = _G[tname .. "TextLeft" .. i]
@@ -2556,6 +2557,28 @@ function M.PriceCrate(tooltip)
         tooltip:HookScript("OnTooltipCleared", function(self) M.CrateReset(self) end)
         -- after the game lays the tooltip out: a line it cut short gets its room
         tooltip:HookScript("OnShow", function(self) M.CrateFit(self) end)
+    end
+end
+
+-- /exchange tipdebug, then hover a crate: what Exchange reads from each bundle line
+function M.CrateDebug(tooltip, tname)
+    M.tipDebug = false
+    for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
+        local fs = _G[tname .. "TextLeft" .. i]
+        local text = fs and fs.GetText and fs:GetText()
+        for line in tostring(text or ""):gmatch("[^\n]+") do
+            local clean = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            local _, n, item = clean:match(CRATE_LINE)
+            if item then
+                local byName, listed = idByName(item), M.CrateGoods[item]
+                local id = M.CrateItem(item)
+                local p, src = nil, nil
+                if id then p, src = reagentPrice(id) end
+                M:Print(("crate: %d x [%s] name id %s, list id %s, game name %s, price %s (%s)"):format(tonumber(n), item,
+                    tostring(byName), tostring(listed), tostring(id and GetItemInfo and GetItemInfo(id)),
+                    p and W.PlainMoney(W.Money(p)) or "none", tostring(src)))
+            end
+        end
     end
 end
 
@@ -3297,7 +3320,7 @@ SlashCmdList.RUINEXCHANGE = function(msg)
         return
     elseif cmd:lower() == "tipdebug" then
         M.tipDebug = true
-        M:Print("Hover a recipe item: Exchange prints what it reads from the tooltip (once).")
+        M:Print("Hover a recipe or a Waylaid Crate: Exchange prints what it reads from the tooltip (once).")
         return
     elseif cmd:lower() == "costs" then
         db.pointCosts = db.pointCosts == false
