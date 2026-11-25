@@ -2485,6 +2485,8 @@ function M.CrateItem(name)
     end
     return idByName(name)
 end
+local NBSP = "\194\160"
+M.NBSP = NBSP
 function M.CrateText(text)
     if type(text) ~= "string" or not text:find("%-%s*%d+%s") then return nil end
     local changed = false
@@ -2496,7 +2498,8 @@ function M.CrateText(text)
         local p = id and reagentPrice(id)
         if not p then return nil end
         changed = true
-        return line .. "  " .. W.Money(p * tonumber(n))
+        -- no-break spaces tie the price to the name, so a wrap can never put it on the next row
+        return line .. NBSP .. NBSP .. W.Money(p * tonumber(n)):gsub(" ", NBSP)
     end)
     return changed and out or nil
 end
@@ -2629,11 +2632,15 @@ function M.CrateWidth(tooltip, fs, text)
         if fs.GetFont then font, size, flags = fs:GetFont() end
         if font and m.SetFont then m:SetFont(font, size, flags or "") end
         if m.SetWordWrap then m:SetWordWrap(false) end
+        -- the coin pictures are left out and room added for each (a font string's
+        -- width may not count inline pictures), plus a little to spare
+        local px = (tonumber(size) or 12) + 3
         local best = 0
         for line in tostring(text):gmatch("[^\n]+") do
             if M.CrateRow(line) then
-                m:SetText(line)
-                best = math.max(best, m:GetStringWidth() or 0)
+                local icons = select(2, line:gsub("|T", ""))
+                m:SetText((line:gsub("|T.-|t", "")))
+                best = math.max(best, (m:GetStringWidth() or 0) + icons * px + 8)
             end
         end
         return best
