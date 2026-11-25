@@ -2485,168 +2485,48 @@ function M.CrateItem(name)
     end
     return idByName(name)
 end
-local NBSP = "\194\160"
-M.NBSP = NBSP
-function M.CrateText(text)
-    if type(text) ~= "string" or not text:find("%-%s*%d+%s") then return nil end
-    local changed = false
-    local out = text:gsub("[^\n]+", function(line)
-        if line:find("|T", 1, true) then return nil end
-        local clean = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-        local _, n, item = clean:match(CRATE_LINE)
-        local id = item and M.CrateItem(item)
-        local p = id and reagentPrice(id)
-        if not p then return nil end
-        changed = true
-        -- no-break spaces tie the price to the name, so a wrap can never put it on the next row
-        return line .. NBSP .. NBSP .. W.Money(p * tonumber(n)):gsub(" ", NBSP)
-    end)
-    return changed and out or nil
-end
-
-
--- The crate's text with its prices. The game still wraps the line; the
--- tooltip is made as wide as the widest priced bundle, so a price can't wrap
--- away from its bundle: through the tooltip's minimum width, and after it's
--- shown (OnShow) by widening the line itself if the game left it narrower.
-function M.PriceCrate(tooltip)
+-- The bundles a Waylaid Crate's tooltip lists ("- 20 Dreamfoil"), read from
+-- its lines: { { n = 20, name = "Dreamfoil", id = 13463 }, ... }, or nil when
+-- the tooltip isn't a crate's.
+function M.CrateBundles(tooltip)
     local tname = tooltip and tooltip.GetName and tooltip:GetName()
     local first = tname and _G[tname .. "TextLeft1"]
     local title = plain(first and first.GetText and first:GetText())
-    if not (type(title) == "string" and title:find("^Waylaid Crate")) then return end
-    if M.tipDebug then M.CrateDebug(tooltip, tname) end
-    local widest, lines = 0, {}
-    for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
-        local fs = _G[tname .. "TextLeft" .. i]
-        local text = fs and fs.GetText and fs:GetText()
-        local priced = M.CrateText(text)
-        if priced then fs:SetText(priced) end
-        priced = priced or (type(text) == "string" and text:find("%-%s*%d+%s[^\n]-|T") and text)    -- priced already
-        if priced then
-            lines[#lines + 1] = fs
-            widest = math.max(widest, M.CrateWidth(tooltip, fs, priced))
-        end
-    end
-    if widest <= 0 then return end
-    tooltip.ruinCrateWidth, tooltip.ruinCrateLines = math.ceil(widest), lines
-    if tooltip.SetMinimumWidth then
-        tooltip:SetMinimumWidth(tooltip.ruinCrateWidth + 24)
-        tooltip.ruinMinWidth = true
-    end
-    if not tooltip.ruinCrateHook and tooltip.HookScript then
-        tooltip.ruinCrateHook = true
-        tooltip:HookScript("OnTooltipCleared", function(self) pcall(M.CrateReset, self) end)
-        tooltip:HookScript("OnShow", function(self) pcall(M.CrateFit, self) end)
-    end
-    -- rebuilt while it's shown (bags, the auction house): no OnShow, so fit it next frame
-    if tooltip.IsShown and tooltip:IsShown() and C_Timer and C_Timer.After then
-        C_Timer.After(0, function() if tooltip.ruinCrateLines then pcall(M.CrateFit, tooltip) end end)
-    end
-end
-
--- /exchange tipdebug, then hover a crate: what Exchange reads from each bundle line
-function M.CrateDebug(tooltip, tname)
-    M.tipDebug = false
+    if not (type(title) == "string" and title:find("^Waylaid Crate")) then return nil end
+    local out = {}
     for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
         local fs = _G[tname .. "TextLeft" .. i]
         local text = fs and fs.GetText and fs:GetText()
         for line in tostring(text or ""):gmatch("[^\n]+") do
             local clean = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
             local _, n, item = clean:match(CRATE_LINE)
-            if item then
-                local byName, listed = idByName(item), M.CrateGoods[item]
-                local id = M.CrateItem(item)
-                local p, src = nil, nil
-                if id then p, src = reagentPrice(id) end
-                M:Print(("crate: %d x [%s] name id %s, list id %s, game name %s, price %s (%s)"):format(tonumber(n), item,
-                    tostring(byName), tostring(listed), tostring(id and GetItemInfo and GetItemInfo(id)),
-                    p and W.PlainMoney(W.Money(p)) or "none", tostring(src)))
-            end
+            if item then out[#out + 1] = { n = tonumber(n), name = item, id = M.CrateItem(item) } end
         end
     end
+    return #out > 0 and out or nil
 end
 
-function M.CrateReset(tooltip)
-    for _, fs in ipairs(tooltip.ruinCrateLines or {}) do
-        if fs.ruinFitted then
-            fs.ruinFitted = nil
-            if fs.SetWidth then fs:SetWidth(0) end      -- CrateFit's width, undone (0: sized by its text again)
-            if fs.SetHeight then fs:SetHeight(0) end
-        end
+-- The crate's bundles as lines for the RUIN: Exchange box: each bundle with
+-- what it costs on the auction house (the low end of the week, as the AH row).
+function M.CrateLines(bundles)
+    local lines = { C.white .. "Fill it with:|r" }
+    for _, b in ipairs(bundles or {}) do
+        local unit = b.id and (M.ExpectedPrice(b.id) or price(b.id))
+        local cost = unit and (W.Money(unit * b.n) .. "  " .. C.dim .. "(" .. W.Money(unit) .. " each)|r") or (C.dim .. "none yet|r")
+        lines[#lines + 1] = ("   %s%d %s:|r %s"):format(C.white, b.n, b.name, cost)
     end
-    tooltip.ruinCrateLines, tooltip.ruinCrateWidth = nil, nil
-    if tooltip.ruinMinWidth and tooltip.SetMinimumWidth then tooltip.ruinMinWidth = nil; tooltip:SetMinimumWidth(0) end
+    return lines
 end
 
--- After the game lays the tooltip out: a priced line narrower than its widest
--- bundle is widened (so it wraps no more), and the tooltip with it.
-local CRATE_PAD = 20        -- the tooltip's edge to its text, both sides
-function M.CrateFit(tooltip)
-    local need = tooltip.ruinCrateWidth
-    if not (need and tooltip.ruinCrateLines and tooltip.GetWidth and tooltip.SetWidth) then return end
-    local shrink, grew = 0, false
-    for _, fs in ipairs(tooltip.ruinCrateLines) do
-        local w = fs.GetWidth and fs:GetWidth() or 0
-        if fs.SetWidth and w < need then
-            local oldH = fs.GetHeight and fs:GetHeight() or 0
-            fs:SetWidth(need)
-            fs.ruinFitted, grew = true, true
-            -- the line's own height follows its width (never fixed here, so nothing is cut later)
-            local newH = fs.GetHeight and fs:GetHeight()
-            if newH and newH > 0 and newH < oldH then shrink = shrink + (oldH - newH) end
-        end
+-- /exchange tipdebug, then hover a crate: what Exchange reads from each bundle line
+function M.CrateDebug(bundles)
+    M.tipDebug = false
+    for _, b in ipairs(bundles or {}) do
+        local unit = b.id and (M.ExpectedPrice(b.id) or price(b.id))
+        M:Print(("crate: %d x [%s] name id %s, list id %s, used id %s, game name %s, AH %s"):format(b.n, b.name,
+            tostring(idByName(b.name)), tostring(M.CrateGoods[b.name]), tostring(b.id),
+            tostring(b.id and GetItemInfo and GetItemInfo(b.id)), unit and W.PlainMoney(W.Money(unit)) or "none"))
     end
-    if not grew then return end
-    if tooltip:GetWidth() < need + CRATE_PAD then tooltip:SetWidth(need + CRATE_PAD) end
-    if shrink > 0 and tooltip.GetHeight and tooltip.SetHeight then tooltip:SetHeight(tooltip:GetHeight() - shrink) end
-end
-
--- a bundle row ("- 20 Dreamfoil ..."), not the sentence above them
-function M.CrateRow(line)
-    local clean = tostring(line):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-    return clean:find("^%s*%-%s*%d+%s") ~= nil
-end
-
--- The widest bundle row ("- 20 Dark Iron Ore 3g 17s") in the line's font, unwrapped.
--- A font string must have a font before it takes text; if measuring fails
--- for any reason, a fair estimate is used instead.
-function M.CrateWidth(tooltip, fs, text)
-    local function estimate()
-        local w = 0
-        for line in tostring(text):gmatch("[^\n]+") do
-            if not M.CrateRow(line) then line = "" end
-            local icons = select(2, line:gsub("|T", ""))
-            local bare = line:gsub("|T.-|t", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-            w = math.max(w, #bare * 6.6 + icons * 14)
-        end
-        return w
-    end
-    local ok, w = pcall(function()
-        local m = tooltip.ruinMeasure
-        if not m then
-            m = tooltip:CreateFontString(nil, "BACKGROUND", "GameTooltipText")
-            m:Hide()
-            tooltip.ruinMeasure = m
-        end
-        local font, size, flags
-        if fs.GetFont then font, size, flags = fs:GetFont() end
-        if font and m.SetFont then m:SetFont(font, size, flags or "") end
-        if m.SetWordWrap then m:SetWordWrap(false) end
-        -- the coin pictures are left out and room added for each (a font string's
-        -- width may not count inline pictures), plus a little to spare
-        local px = (tonumber(size) or 12) + 3
-        local best = 0
-        for line in tostring(text):gmatch("[^\n]+") do
-            if M.CrateRow(line) then
-                local icons = select(2, line:gsub("|T", ""))
-                m:SetText((line:gsub("|T.-|t", "")))
-                best = math.max(best, (m:GetStringWidth() or 0) + icons * px + 8)
-            end
-        end
-        return best
-    end)
-    if ok and type(w) == "number" and w > 0 then return w end
-    return estimate()
 end
 
 local function onTooltip(tooltip, data)
@@ -2659,9 +2539,14 @@ local function onTooltip(tooltip, data)
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
     if tooltip.ruinBox then tooltip.ruinBox:Hide() end
-    pcall(M.CrateReset, tooltip)
-    pcall(M.PriceCrate, tooltip)
     local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data), M.TooltipBound(tooltip, data))
+    -- a Waylaid Crate: each bundle it takes and its auction house cost, in the box
+    local okc, bundles = pcall(M.CrateBundles, tooltip)
+    if okc and bundles then
+        if M.tipDebug then pcall(M.CrateDebug, bundles) end
+        if not (ok and lines) then ok, lines = true, { C.gold .. "RUIN: Exchange|r" } end
+        for _, l in ipairs(M.CrateLines(bundles)) do lines[#lines + 1] = l end
+    end
 
     local ok3, err = pcall(function()
         local id = tonumber(tostring(link):match("item:(%d+)"))
