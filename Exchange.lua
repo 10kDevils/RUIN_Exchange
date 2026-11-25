@@ -2441,6 +2441,38 @@ function M.RecipeLines(itemName, texts)
     return lines
 end
 
+-- A Waylaid Crate lists the bundles that fill it ("- 20 Dream Dust"): each
+-- line gets what that bundle costs to buy, in coins. The lines can sit in one
+-- text line (the Use: text) or one each; a line already priced is left alone.
+local CRATE_LINE = "^(%s*%-%s*)(%d+)%s+([^|\n]-)%s*$"
+function M.CrateText(text)
+    if type(text) ~= "string" or not text:find("%-%s*%d+%s") then return nil end
+    local changed = false
+    local out = text:gsub("[^\n]+", function(line)
+        if line:find("|T", 1, true) then return nil end
+        local clean = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        local _, n, item = clean:match(CRATE_LINE)
+        local id = item and idByName(item)
+        local p = id and reagentPrice(id)
+        if not p then return nil end
+        changed = true
+        return line .. "  " .. W.Money(p * tonumber(n))
+    end)
+    return changed and out or nil
+end
+function M.PriceCrate(tooltip)
+    local tname = tooltip and tooltip.GetName and tooltip:GetName()
+    local first = tname and _G[tname .. "TextLeft1"]
+    local title = plain(first and first.GetText and first:GetText())
+    if not (type(title) == "string" and title:find("^Waylaid Crate")) then return end
+    for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
+        local fs = _G[tname .. "TextLeft" .. i]
+        local text = fs and fs.GetText and fs:GetText()
+        local priced = M.CrateText(text)
+        if priced then fs:SetText(priced) end
+    end
+end
+
 local function onTooltip(tooltip, data)
     if not db or not db.tooltip then return end
     local link
@@ -2451,6 +2483,7 @@ local function onTooltip(tooltip, data)
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
     if tooltip.ruinBox then tooltip.ruinBox:Hide() end
+    pcall(M.PriceCrate, tooltip)
     local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data), M.TooltipBound(tooltip, data))
 
     local ok3, err = pcall(function()
