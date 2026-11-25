@@ -2501,62 +2501,43 @@ function M.CrateText(text)
     return changed and out or nil
 end
 
--- A long line of plain words broken into lines of at most `max` letters (the
--- Use: sentence above the bundles); lines with colour codes are left whole.
-local function breakLine(line, max)
-    if #line <= max or line:find("|", 1, true) then return line end
-    local out, cur = {}, ""
-    for word in line:gmatch("%S+") do
-        if cur ~= "" and #cur + 1 + #word > max then out[#out + 1] = cur; cur = word
-        else cur = cur == "" and word or (cur .. " " .. word) end
-    end
-    if cur ~= "" then out[#out + 1] = cur end
-    return table.concat(out, "\n")
-end
-M.BreakLine = breakLine
 
--- The crate's text with its prices, laid out by RUIN: one bundle a line, the
--- sentence above broken by hand, and the line no longer wrapped by the game,
--- so a price can't wrap away from its bundle. The tooltip grows to fit.
+-- The crate's text with its prices. The game still wraps the line; the
+-- tooltip is made as wide as the widest priced bundle, so a price can't wrap
+-- away from its bundle: through the tooltip's minimum width, and after it's
+-- shown (OnShow) by widening the line itself if the game left it narrower.
 function M.PriceCrate(tooltip)
     local tname = tooltip and tooltip.GetName and tooltip:GetName()
     local first = tname and _G[tname .. "TextLeft1"]
     local title = plain(first and first.GetText and first:GetText())
     if not (type(title) == "string" and title:find("^Waylaid Crate")) then return end
     if M.tipDebug then M.CrateDebug(tooltip, tname) end
-    local widest = 0
+    local widest, lines = 0, {}
     for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
         local fs = _G[tname .. "TextLeft" .. i]
         local text = fs and fs.GetText and fs:GetText()
         local priced = M.CrateText(text)
-        -- already priced (the game ran the hook again on the same lines): lay it out again
-        if not priced and type(text) == "string" and text:find("%-%s*%d+%s[^\n]-|T") then priced = text end
+        if priced then fs:SetText(priced) end
+        priced = priced or (type(text) == "string" and text:find("%-%s*%d+%s[^\n]-|T") and text)    -- priced already
         if priced then
-            local lines = {}
-            for line in priced:gmatch("[^\n]+") do
-                lines[#lines + 1] = line:find("|T", 1, true) and line or breakLine(line, 38)
-            end
-            priced = table.concat(lines, "\n")
-            fs:SetText(priced)
-            if fs.SetWordWrap then
-                fs:SetWordWrap(false)
-                tooltip.ruinNoWrap = tooltip.ruinNoWrap or {}
-                tooltip.ruinNoWrap[#tooltip.ruinNoWrap + 1] = fs
-            end
+            lines[#lines + 1] = fs
             widest = math.max(widest, M.CrateWidth(tooltip, fs, priced))
         end
     end
     if widest <= 0 then return end
-    tooltip.ruinCrateWidth = math.ceil(widest)
+    tooltip.ruinCrateWidth, tooltip.ruinCrateLines = math.ceil(widest), lines
     if tooltip.SetMinimumWidth then
         tooltip:SetMinimumWidth(tooltip.ruinCrateWidth + 24)
         tooltip.ruinMinWidth = true
     end
     if not tooltip.ruinCrateHook and tooltip.HookScript then
         tooltip.ruinCrateHook = true
-        tooltip:HookScript("OnTooltipCleared", function(self) M.CrateReset(self) end)
-        -- after the game lays the tooltip out: a line it cut short gets its room
-        tooltip:HookScript("OnShow", function(self) M.CrateFit(self) end)
+        tooltip:HookScript("OnTooltipCleared", function(self) pcall(M.CrateReset, self) end)
+        tooltip:HookScript("OnShow", function(self) pcall(M.CrateFit, self) end)
+    end
+    -- rebuilt while it's shown (bags, the auction house): no OnShow, so fit it next frame
+    if tooltip.IsShown and tooltip:IsShown() and C_Timer and C_Timer.After then
+        C_Timer.After(0, function() if tooltip.ruinCrateLines then pcall(M.CrateFit, tooltip) end end)
     end
 end
 
@@ -2583,47 +2564,82 @@ function M.CrateDebug(tooltip, tname)
 end
 
 function M.CrateReset(tooltip)
-    for _, fs in ipairs(tooltip.ruinNoWrap or {}) do
-        if fs.SetWordWrap then fs:SetWordWrap(true) end
-        if fs.ruinFitted and fs.SetWidth then fs.ruinFitted = nil; fs:SetWidth(0) end     -- CrateFit's width, undone
+    for _, fs in ipairs(tooltip.ruinCrateLines or {}) do
+        if fs.ruinFitted then
+            fs.ruinFitted = nil
+            if fs.SetWidth then fs:SetWidth(0) end      -- CrateFit's width, undone (0: sized by its text again)
+            if fs.SetHeight then fs:SetHeight(0) end
+        end
     end
-    tooltip.ruinNoWrap, tooltip.ruinCrateWidth = nil, nil
+    tooltip.ruinCrateLines, tooltip.ruinCrateWidth = nil, nil
     if tooltip.ruinMinWidth and tooltip.SetMinimumWidth then tooltip.ruinMinWidth = nil; tooltip:SetMinimumWidth(0) end
 end
 
+-- After the game lays the tooltip out: a priced line narrower than its widest
+-- bundle is widened (so it wraps no more), and the tooltip with it.
+local CRATE_PAD = 20        -- the tooltip's edge to its text, both sides
 function M.CrateFit(tooltip)
     local need = tooltip.ruinCrateWidth
-    if not (need and tooltip.ruinNoWrap) then return end
-    local grow = 0
-    for _, fs in ipairs(tooltip.ruinNoWrap) do
-        if fs.GetWidth and fs.SetWidth and (fs:GetWidth() or 0) < need then
-            grow = math.max(grow, need - (fs:GetWidth() or 0))
+    if not (need and tooltip.ruinCrateLines and tooltip.GetWidth and tooltip.SetWidth) then return end
+    local shrink, grew = 0, false
+    for _, fs in ipairs(tooltip.ruinCrateLines) do
+        local w = fs.GetWidth and fs:GetWidth() or 0
+        if fs.SetWidth and w < need then
+            local oldH = fs.GetHeight and fs:GetHeight() or 0
             fs:SetWidth(need)
-            fs.ruinFitted = true
+            fs.ruinFitted, grew = true, true
+            -- the line's own height follows its width (never fixed here, so nothing is cut later)
+            local newH = fs.GetHeight and fs:GetHeight()
+            if newH and newH > 0 and newH < oldH then shrink = shrink + (oldH - newH) end
         end
     end
-    if grow > 0 and tooltip.GetWidth and tooltip.SetWidth then tooltip:SetWidth(tooltip:GetWidth() + grow) end
+    if not grew then return end
+    if tooltip:GetWidth() < need + CRATE_PAD then tooltip:SetWidth(need + CRATE_PAD) end
+    if shrink > 0 and tooltip.GetHeight and tooltip.SetHeight then tooltip:SetHeight(tooltip:GetHeight() - shrink) end
 end
 
--- the widest line ("- 20 Dark Iron Ore 3g 17s") in the tooltip's font, unwrapped
+-- a bundle row ("- 20 Dreamfoil ..."), not the sentence above them
+function M.CrateRow(line)
+    local clean = tostring(line):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    return clean:find("^%s*%-%s*%d+%s") ~= nil
+end
+
+-- The widest bundle row ("- 20 Dark Iron Ore 3g 17s") in the line's font, unwrapped.
+-- A font string must have a font before it takes text; if measuring fails
+-- for any reason, a fair estimate is used instead.
 function M.CrateWidth(tooltip, fs, text)
-    local m = tooltip.ruinMeasure
-    if not m then
-        m = tooltip:CreateFontString(nil, "BACKGROUND")
-        m:Hide()
+    local function estimate()
+        local w = 0
+        for line in tostring(text):gmatch("[^\n]+") do
+            if not M.CrateRow(line) then line = "" end
+            local icons = select(2, line:gsub("|T", ""))
+            local bare = line:gsub("|T.-|t", ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+            w = math.max(w, #bare * 6.6 + icons * 14)
+        end
+        return w
+    end
+    local ok, w = pcall(function()
+        local m = tooltip.ruinMeasure
+        if not m then
+            m = tooltip:CreateFontString(nil, "BACKGROUND", "GameTooltipText")
+            m:Hide()
+            tooltip.ruinMeasure = m
+        end
+        local font, size, flags
+        if fs.GetFont then font, size, flags = fs:GetFont() end
+        if font and m.SetFont then m:SetFont(font, size, flags or "") end
         if m.SetWordWrap then m:SetWordWrap(false) end
-        tooltip.ruinMeasure = m
-    end
-    if fs.GetFont and m.SetFont then
-        local font, size, flags = fs:GetFont()
-        if font then m:SetFont(font, size, flags) end
-    end
-    local w = 0
-    for line in tostring(text):gmatch("[^\n]+") do
-        m:SetText(line)
-        w = math.max(w, m.GetStringWidth and m:GetStringWidth() or 0)
-    end
-    return w
+        local best = 0
+        for line in tostring(text):gmatch("[^\n]+") do
+            if M.CrateRow(line) then
+                m:SetText(line)
+                best = math.max(best, m:GetStringWidth() or 0)
+            end
+        end
+        return best
+    end)
+    if ok and type(w) == "number" and w > 0 then return w end
+    return estimate()
 end
 
 local function onTooltip(tooltip, data)
