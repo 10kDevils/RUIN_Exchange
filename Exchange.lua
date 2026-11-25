@@ -2465,12 +2465,50 @@ function M.PriceCrate(tooltip)
     local first = tname and _G[tname .. "TextLeft1"]
     local title = plain(first and first.GetText and first:GetText())
     if not (type(title) == "string" and title:find("^Waylaid Crate")) then return end
+    local widest = 0
     for i = 2, (tooltip.NumLines and tooltip:NumLines()) or 0 do
         local fs = _G[tname .. "TextLeft" .. i]
         local text = fs and fs.GetText and fs:GetText()
         local priced = M.CrateText(text)
-        if priced then fs:SetText(priced) end
+        if priced then
+            fs:SetText(priced)
+            widest = math.max(widest, M.CrateWidth(tooltip, fs, priced))
+        end
     end
+    -- wide enough that no bundle wraps away from its price
+    if widest > 0 and tooltip.SetMinimumWidth then
+        tooltip:SetMinimumWidth(math.ceil(widest) + 24)
+        tooltip.ruinMinWidth = true
+        if not tooltip.ruinMinHook and tooltip.HookScript then
+            tooltip.ruinMinHook = true
+            tooltip:HookScript("OnTooltipCleared", function(self)
+                if self.ruinMinWidth then self.ruinMinWidth = nil; self:SetMinimumWidth(0) end
+            end)
+        end
+    end
+end
+
+-- the widest bundle line ("- 20 Dark Iron Ore 3g 17s") in the tooltip's font, unwrapped
+function M.CrateWidth(tooltip, fs, text)
+    local m = tooltip.ruinMeasure
+    if not m then
+        m = tooltip:CreateFontString(nil, "BACKGROUND")
+        m:Hide()
+        if m.SetWordWrap then m:SetWordWrap(false) end
+        tooltip.ruinMeasure = m
+    end
+    if fs.GetFont and m.SetFont then
+        local font, size, flags = fs:GetFont()
+        if font then m:SetFont(font, size, flags) end
+    end
+    local w = 0
+    for line in tostring(text):gmatch("[^\n]+") do
+        if line:find("|T", 1, true) then
+            m:SetText(line)
+            w = math.max(w, m.GetStringWidth and m:GetStringWidth() or 0)
+        end
+    end
+    return w
 end
 
 local function onTooltip(tooltip, data)
@@ -2483,6 +2521,7 @@ local function onTooltip(tooltip, data)
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
     if tooltip.ruinBox then tooltip.ruinBox:Hide() end
+    if tooltip.ruinMinWidth and tooltip.SetMinimumWidth then tooltip.ruinMinWidth = nil; tooltip:SetMinimumWidth(0) end
     pcall(M.PriceCrate, tooltip)
     local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data), M.TooltipBound(tooltip, data))
 
