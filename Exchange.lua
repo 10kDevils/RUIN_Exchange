@@ -2445,6 +2445,46 @@ end
 -- line gets what that bundle costs to buy, in coins. The lines can sit in one
 -- text line (the Use: text) or one each; a line already priced is left alone.
 local CRATE_LINE = "^(%s*%-%s*)(%d+)%s+([^|\n]-)%s*$"
+-- Trade goods the crates ask for, by name, for when the game hasn't shown
+-- you the item yet (a name the game can't place has no price). Checked
+-- against the game's own name for the id whenever it knows it.
+M.CrateGoods = {
+    ["Peacebloom"] = 2447, ["Silverleaf"] = 765, ["Earthroot"] = 2449, ["Mageroyal"] = 785, ["Briarthorn"] = 2450,
+    ["Stranglekelp"] = 3820, ["Bruiseweed"] = 2453, ["Wild Steelbloom"] = 3355, ["Grave Moss"] = 3369,
+    ["Kingsblood"] = 3356, ["Liferoot"] = 3357, ["Fadeleaf"] = 3818, ["Goldthorn"] = 3821, ["Khadgar's Whisker"] = 3358,
+    ["Wintersbite"] = 3819, ["Firebloom"] = 4625, ["Purple Lotus"] = 8831, ["Arthas' Tears"] = 8836, ["Sungrass"] = 8838,
+    ["Blindweed"] = 8839, ["Ghost Mushroom"] = 8845, ["Gromsblood"] = 8846, ["Dreamfoil"] = 13463,
+    ["Golden Sansam"] = 13464, ["Mountain Silversage"] = 13465, ["Plaguebloom"] = 13466, ["Icecap"] = 13467,
+    ["Black Lotus"] = 13468,
+    ["Copper Ore"] = 2770, ["Tin Ore"] = 2771, ["Iron Ore"] = 2772, ["Silver Ore"] = 2775, ["Gold Ore"] = 2776,
+    ["Mithril Ore"] = 3858, ["Truesilver Ore"] = 7911, ["Thorium Ore"] = 10620, ["Dark Iron Ore"] = 11370,
+    ["Copper Bar"] = 2840, ["Bronze Bar"] = 2841, ["Iron Bar"] = 3575, ["Steel Bar"] = 3859, ["Mithril Bar"] = 3860,
+    ["Truesilver Bar"] = 6037, ["Thorium Bar"] = 12359, ["Dark Iron Bar"] = 11371, ["Arcanite Bar"] = 12360,
+    ["Light Leather"] = 2318, ["Medium Leather"] = 2319, ["Heavy Leather"] = 4234, ["Thick Leather"] = 4304,
+    ["Rugged Leather"] = 8170, ["Thick Hide"] = 8169, ["Rugged Hide"] = 8171,
+    ["Linen Cloth"] = 2589, ["Wool Cloth"] = 2592, ["Silk Cloth"] = 4306, ["Mageweave Cloth"] = 4338,
+    ["Runecloth"] = 14047, ["Felcloth"] = 14256, ["Bolt of Silk Cloth"] = 4305, ["Bolt of Mageweave"] = 4339,
+    ["Bolt of Runecloth"] = 14048,
+    ["Strange Dust"] = 10940, ["Soul Dust"] = 11083, ["Vision Dust"] = 11137, ["Dream Dust"] = 11176,
+    ["Illusion Dust"] = 16204, ["Lesser Nether Essence"] = 11174, ["Greater Nether Essence"] = 11175,
+    ["Lesser Eternal Essence"] = 16202, ["Greater Eternal Essence"] = 16203, ["Small Radiant Shard"] = 11177,
+    ["Large Radiant Shard"] = 11178, ["Small Brilliant Shard"] = 14343, ["Large Brilliant Shard"] = 14344,
+    ["Essence of Fire"] = 7078, ["Essence of Earth"] = 7076, ["Essence of Water"] = 7080, ["Essence of Air"] = 7082,
+    ["Essence of Undeath"] = 12808, ["Elemental Fire"] = 7068, ["Heart of Fire"] = 7077, ["Core of Earth"] = 7075,
+    ["Globe of Water"] = 7079, ["Breath of Wind"] = 7081,
+}
+function M.CrateItem(name)
+    local id = M.CrateGoods[name]
+    if id then
+        local known = GetItemInfo and GetItemInfo(id)
+        if not known then
+            if R.Items.Request then R.Items.Request(id) end
+            return id
+        end
+        if known == name then return id end                 -- else not the item this realm calls that
+    end
+    return idByName(name)
+end
 function M.CrateText(text)
     if type(text) ~= "string" or not text:find("%-%s*%d+%s") then return nil end
     local changed = false
@@ -2452,7 +2492,7 @@ function M.CrateText(text)
         if line:find("|T", 1, true) then return nil end
         local clean = line:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
         local _, n, item = clean:match(CRATE_LINE)
-        local id = item and idByName(item)
+        local id = item and M.CrateItem(item)
         local p = id and reagentPrice(id)
         if not p then return nil end
         changed = true
@@ -2460,6 +2500,24 @@ function M.CrateText(text)
     end)
     return changed and out or nil
 end
+
+-- A long line of plain words broken into lines of at most `max` letters (the
+-- Use: sentence above the bundles); lines with colour codes are left whole.
+local function breakLine(line, max)
+    if #line <= max or line:find("|", 1, true) then return line end
+    local out, cur = {}, ""
+    for word in line:gmatch("%S+") do
+        if cur ~= "" and #cur + 1 + #word > max then out[#out + 1] = cur; cur = word
+        else cur = cur == "" and word or (cur .. " " .. word) end
+    end
+    if cur ~= "" then out[#out + 1] = cur end
+    return table.concat(out, "\n")
+end
+M.BreakLine = breakLine
+
+-- The crate's text with its prices, laid out by RUIN: one bundle a line, the
+-- sentence above broken by hand, and the line no longer wrapped by the game,
+-- so a price can't wrap away from its bundle. The tooltip grows to fit.
 function M.PriceCrate(tooltip)
     local tname = tooltip and tooltip.GetName and tooltip:GetName()
     local first = tname and _G[tname .. "TextLeft1"]
@@ -2470,25 +2528,61 @@ function M.PriceCrate(tooltip)
         local fs = _G[tname .. "TextLeft" .. i]
         local text = fs and fs.GetText and fs:GetText()
         local priced = M.CrateText(text)
+        -- already priced (the game ran the hook again on the same lines): lay it out again
+        if not priced and type(text) == "string" and text:find("%-%s*%d+%s[^\n]-|T") then priced = text end
         if priced then
+            local lines = {}
+            for line in priced:gmatch("[^\n]+") do
+                lines[#lines + 1] = line:find("|T", 1, true) and line or breakLine(line, 38)
+            end
+            priced = table.concat(lines, "\n")
             fs:SetText(priced)
+            if fs.SetWordWrap then
+                fs:SetWordWrap(false)
+                tooltip.ruinNoWrap = tooltip.ruinNoWrap or {}
+                tooltip.ruinNoWrap[#tooltip.ruinNoWrap + 1] = fs
+            end
             widest = math.max(widest, M.CrateWidth(tooltip, fs, priced))
         end
     end
-    -- wide enough that no bundle wraps away from its price
-    if widest > 0 and tooltip.SetMinimumWidth then
-        tooltip:SetMinimumWidth(math.ceil(widest) + 24)
+    if widest <= 0 then return end
+    tooltip.ruinCrateWidth = math.ceil(widest)
+    if tooltip.SetMinimumWidth then
+        tooltip:SetMinimumWidth(tooltip.ruinCrateWidth + 24)
         tooltip.ruinMinWidth = true
-        if not tooltip.ruinMinHook and tooltip.HookScript then
-            tooltip.ruinMinHook = true
-            tooltip:HookScript("OnTooltipCleared", function(self)
-                if self.ruinMinWidth then self.ruinMinWidth = nil; self:SetMinimumWidth(0) end
-            end)
-        end
+    end
+    if not tooltip.ruinCrateHook and tooltip.HookScript then
+        tooltip.ruinCrateHook = true
+        tooltip:HookScript("OnTooltipCleared", function(self) M.CrateReset(self) end)
+        -- after the game lays the tooltip out: a line it cut short gets its room
+        tooltip:HookScript("OnShow", function(self) M.CrateFit(self) end)
     end
 end
 
--- the widest bundle line ("- 20 Dark Iron Ore 3g 17s") in the tooltip's font, unwrapped
+function M.CrateReset(tooltip)
+    for _, fs in ipairs(tooltip.ruinNoWrap or {}) do
+        if fs.SetWordWrap then fs:SetWordWrap(true) end
+        if fs.ruinFitted and fs.SetWidth then fs.ruinFitted = nil; fs:SetWidth(0) end     -- CrateFit's width, undone
+    end
+    tooltip.ruinNoWrap, tooltip.ruinCrateWidth = nil, nil
+    if tooltip.ruinMinWidth and tooltip.SetMinimumWidth then tooltip.ruinMinWidth = nil; tooltip:SetMinimumWidth(0) end
+end
+
+function M.CrateFit(tooltip)
+    local need = tooltip.ruinCrateWidth
+    if not (need and tooltip.ruinNoWrap) then return end
+    local grow = 0
+    for _, fs in ipairs(tooltip.ruinNoWrap) do
+        if fs.GetWidth and fs.SetWidth and (fs:GetWidth() or 0) < need then
+            grow = math.max(grow, need - (fs:GetWidth() or 0))
+            fs:SetWidth(need)
+            fs.ruinFitted = true
+        end
+    end
+    if grow > 0 and tooltip.GetWidth and tooltip.SetWidth then tooltip:SetWidth(tooltip:GetWidth() + grow) end
+end
+
+-- the widest line ("- 20 Dark Iron Ore 3g 17s") in the tooltip's font, unwrapped
 function M.CrateWidth(tooltip, fs, text)
     local m = tooltip.ruinMeasure
     if not m then
@@ -2503,10 +2597,8 @@ function M.CrateWidth(tooltip, fs, text)
     end
     local w = 0
     for line in tostring(text):gmatch("[^\n]+") do
-        if line:find("|T", 1, true) then
-            m:SetText(line)
-            w = math.max(w, m.GetStringWidth and m:GetStringWidth() or 0)
-        end
+        m:SetText(line)
+        w = math.max(w, m.GetStringWidth and m:GetStringWidth() or 0)
     end
     return w
 end
@@ -2521,7 +2613,7 @@ local function onTooltip(tooltip, data)
     end
     if not link or (issecretvalue and issecretvalue(link)) then return end
     if tooltip.ruinBox then tooltip.ruinBox:Hide() end
-    if tooltip.ruinMinWidth and tooltip.SetMinimumWidth then tooltip.ruinMinWidth = nil; tooltip:SetMinimumWidth(0) end
+    pcall(M.CrateReset, tooltip)
     pcall(M.PriceCrate, tooltip)
     local ok, lines = pcall(priceLines, link, tooltipCount(tooltip, data), M.TooltipBound(tooltip, data))
 
