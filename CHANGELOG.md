@@ -4,6 +4,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
+- **Crate tooltips are sturdier**: if a Waylaid Crate's bundle list can't be worked out, the rest of the RUIN: Exchange box still shows and the error doesn't come back on every hover.
 - **Waylaid Crate bundles.** A Waylaid Crate's RUIN: Exchange box lists each bundle it takes ("20 Dreamfoil") with what it costs on the auction house, and the price of one. A reagent with no AH price yet says so. /exchange tipdebug, then hovering a crate, prints what Exchange reads for each bundle.
 - **Watch list.** A new Watch tab holds items you want to buy, each with the most you'll pay. *Add my Best in Slot* fills it from RUIN Codex (the pieces that can be traded, with today's price as the limit), or shift-click any item into the box (or `/exchange watch <item> <gold>`). When a price at or under your limit comes in, from your own auction house visit or one another RUIN member shares, Exchange tells you who saw it and for how much (once an hour per item).
 

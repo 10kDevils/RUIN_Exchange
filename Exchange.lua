@@ -2544,8 +2544,12 @@ local function onTooltip(tooltip, data)
     local okc, bundles = pcall(M.CrateBundles, tooltip)
     if okc and bundles then
         if M.tipDebug then pcall(M.CrateDebug, bundles) end
-        if not (ok and lines) then ok, lines = true, { C.gold .. "RUIN: Exchange|r" } end
-        for _, l in ipairs(M.CrateLines(bundles)) do lines[#lines + 1] = l end
+        -- protected too, so one bad price can't raise an error on every crate hover
+        local okl, crate = pcall(M.CrateLines, bundles)
+        if okl and type(crate) == "table" then
+            if not (ok and lines) then ok, lines = true, { C.gold .. "RUIN: Exchange|r" } end
+            for _, l in ipairs(crate) do lines[#lines + 1] = l end
+        end
     end
 
     local ok3, err = pcall(function()
