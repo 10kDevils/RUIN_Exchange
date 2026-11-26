@@ -2,7 +2,7 @@
 
 Versioning: the third number counts the meaningful changes made since the second number last went up.
 
-## Unreleased
+## 0.9.0
 
 - **Crate tooltips are sturdier**: if a Waylaid Crate's bundle list can't be worked out, the rest of the RUIN: Exchange box still shows and the error doesn't come back on every hover.
 - **Waylaid Crate bundles.** A Waylaid Crate's RUIN: Exchange box lists each bundle it takes ("20 Dreamfoil") with what it costs on the auction house, and the price of one. A reagent with no AH price yet says so. /exchange tipdebug, then hovering a crate, prints what Exchange reads for each bundle.
