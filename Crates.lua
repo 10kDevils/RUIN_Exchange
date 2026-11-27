@@ -1,9 +1,10 @@
 -- RUIN Exchange: Waylaid Crates on the auction house
 -- A "Waylaid Crates" category in the auction house's Buy list, after
--- Miscellaneous: each crate under it, and under each crate the bundles that
--- fill it. Clicking a crate opens a card beside the auction house with what
--- each bundle costs (any one bundle fills the crate; the cheapest is named)
--- and searches for the cheapest; clicking a bundle searches for that item.
+-- Miscellaneous, with Apprentice, Journeyman, Expert and Artisan under it and
+-- each crate under the tier its name carries. Clicking a crate lists every
+-- reagent that fills it in the auction house's results and opens a card
+-- beside it with what each bundle costs, a mark by the cheapest (any one
+-- bundle fills the crate); clicking a bundle searches for just that item.
 -- Crates you hover are learned, so a new kind shows up too. Where the game's
 -- category list can't take it, a dropdown under the Buy page does the same.
 local ADDON, ns = ...
@@ -19,6 +20,15 @@ local ui = {}
 local fillCategory
 
 local PREFIX = "Waylaid Crate: "
+local CHEAPEST = "|TInterface\\RaidFrame\\ReadyCheck-Ready:14:14:0:0|t "
+Crates.TIERS = { "Apprentice", "Journeyman", "Expert", "Artisan" }
+
+-- the tier a crate's name carries ("Earthly Artisan Herbs" -> Artisan), or nil
+function Crates.Tier(short)
+    for _, t in ipairs(Crates.TIERS) do
+        if type(short) == "string" and short:find("%f[%a]" .. t .. "%f[%A]") then return t end
+    end
+end
 local ROW_H, CARD_W, PAD, TOP = 24, 290, 14, 62   -- TOP: where the first row starts
 
 -- the crates known before any is hovered: short name -> { { n, name }, ... }
@@ -142,7 +152,7 @@ local function drawCard()
         row:SetPoint("TOPLEFT", PAD - 6, -TOP - (i - 1) * ROW_H)
         row:SetPoint("TOPRIGHT", -(PAD - 6), -TOP - (i - 1) * ROW_H)
         row:SetHeight(ROW_H - 2)
-        row:SetText(("%d %s"):format(c.n, c.name))
+        row:SetText(((best and best == c) and CHEAPEST or "") .. ("%d %s"):format(c.n, c.name))
         row.price:SetText(c.total and W.Money(c.total) or (C.dim .. "none yet|r"))
         if Crates.lastSearch == c.name then row:LockHighlight() else row:UnlockHighlight() end
         row:Show()
@@ -169,13 +179,41 @@ end
 Crates.Draw = drawCard
 
 -- open a crate: its card, and a search for its cheapest bundle (the first if none is priced)
+-- Lists every reagent that fills the crate in the auction house's results
+-- (one search for all of them). False when the game can't search by a list.
+function Crates.ListAll(short)
+    local AH = rawget(_G, "C_AuctionHouse")
+    local list = Crates.All()[short]
+    if not (list and AH and AH.SearchForItemKeys and AH.MakeItemKey) then return false end
+    local keys = {}
+    for _, e in ipairs(list) do
+        local id = M.CrateItem and M.CrateItem(e[2])
+        local ok, key = pcall(AH.MakeItemKey, id or 0)
+        if id and ok and key then keys[#keys + 1] = key end
+    end
+    if #keys == 0 then return false end
+    -- a crate name left in the search box would narrow the next search of yours
+    local f = rawget(_G, "AuctionHouseFrame")
+    local sb = type(f) == "table" and f.SearchBar
+    local box = type(sb) == "table" and sb.SearchBox
+    if Crates.lastSearch and type(box) == "table" and box.GetText and box:GetText() == ('"' .. Crates.lastSearch .. '"') then box:SetText("") end
+    local sortOrder = rawget(_G, "Enum") and Enum.AuctionHouseSortOrder and Enum.AuctionHouseSortOrder.Price or 0
+    local ok = pcall(AH.SearchForItemKeys, keys, { { sortOrder = sortOrder, reverseSort = false } })
+    if ok then Crates.lastSearch = nil end
+    return ok
+end
+
+-- open a crate: its card, and every reagent that fills it in the results
+-- (or, if the game can't list several, a search for the cheapest)
 function Crates.Pick(short)
     if not Crates.All()[short] then return end
     db.crateSel = short
-    local _, best = Crates.Costs(short)
-    local first = Crates.All()[short][1]
-    local item = (best and best.name) or (first and first[2])
-    if item then Crates.Search(item) end
+    if not Crates.ListAll(short) then
+        local _, best = Crates.Costs(short)
+        local first = Crates.All()[short][1]
+        local item = (best and best.name) or (first and first[2])
+        if item then Crates.Search(item) end
+    end
     if ui.dropdown then ui.dropdown.Refresh() end
     drawCard()
 end
@@ -196,17 +234,24 @@ end
 function fillCategory()
     local top = ui.category
     if not top then return end
+    -- the game's list goes three deep: Waylaid Crates > tier > crate
     top.subCategories = {}
+    local byTier = {}
+    for _, t in ipairs(Crates.TIERS) do
+        byTier[t] = newCategory(t)
+        byTier[t].subCategories = {}
+        top.subCategories[#top.subCategories + 1] = byTier[t]
+    end
     for _, short in ipairs(Crates.Names()) do
-        local sub = newCategory(short)
-        sub.ruinCrate = short
-        sub.subCategories = {}
-        for _, e in ipairs(Crates.All()[short]) do
-            local leaf = newCategory(("%d %s"):format(e[1], e[2]))
-            leaf.ruinCrate, leaf.ruinItem = short, e[2]
-            sub.subCategories[#sub.subCategories + 1] = leaf
+        local t = Crates.Tier(short) or "Other"
+        if not byTier[t] then
+            byTier[t] = newCategory(t)
+            byTier[t].subCategories = {}
+            top.subCategories[#top.subCategories + 1] = byTier[t]
         end
-        top.subCategories[#top.subCategories + 1] = sub
+        local leaf = newCategory(short)
+        leaf.ruinCrate = short
+        byTier[t].subCategories[#byTier[t].subCategories + 1] = leaf
     end
 end
 
@@ -232,13 +277,13 @@ local function onCategoryClick()
     local a, b, c = selection(list)
     local mine = a and a == categoryIndex()
     if mine then
-        local sub = b and ui.category.subCategories[b]
-        local leaf = sub and c and sub.subCategories[c]
-        if leaf then
-            db.crateSel = leaf.ruinCrate
-            C_Timer.After(0, function() Crates.Search(leaf.ruinItem); drawCard() end)
-        elseif sub then
-            C_Timer.After(0, function() Crates.Pick(sub.ruinCrate) end)
+        local tier = b and ui.category.subCategories[b]
+        local crate = tier and c and tier.subCategories[c]
+        if crate then
+            C_Timer.After(0, function() Crates.Pick(crate.ruinCrate) end)
+        elseif ui.card then
+            ui.card:Hide()
+            db.crateSel = nil
         end
     else
         if ui.card then ui.card:Hide() end

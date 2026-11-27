@@ -132,34 +132,23 @@ function M.PruneHistory()
     return dropped
 end
 
--- The price to expect on the auction house: the low end of what it has
--- sold for lately (each of the last 7 days' lowest listing, and today's),
--- leaving out a mispriced one far below the rest (under 40% of the middle).
--- A price seen in the last two hours is the price to expect (unless it's a
--- mispriced one far below the rest): the auction house is right in front of
--- you, so the week only matters once that price is old.
+-- The price Exchange uses for an item: the lowest listing last seen on the
+-- auction house (yours or one shared by RUIN). Only when it has never been
+-- seen does the low end of the last week's prices stand in.
 -- Returns that and the current lowest listing.
-local FRESH_NOW = 2 * 3600
 function M.ExpectedPrice(id)
     local cur = db.prices[id]
     local now = cur and cur.p and cur.p > 0 and cur.p or nil
-    local vals = {}
-    if now then vals[1] = now end
+    if now then return now, now end
+    local low
     local h = db.history[id]
     if type(h) == "table" then
         local today = dayKey()
         for d, v in pairs(h) do
-            if type(d) == "number" and d > today - 7 and type(v) == "number" and v > 0 then vals[#vals + 1] = v end
+            if type(d) == "number" and d > today - 7 and type(v) == "number" and v > 0 and (not low or v < low) then low = v end
         end
     end
-    if #vals == 0 then return nil, now end
-    table.sort(vals)
-    local mid = vals[math.ceil(#vals / 2)]
-    if now and (GetServerTime() - (cur.t or 0)) < FRESH_NOW and now >= mid * 0.4 then return now, now end
-    for _, v in ipairs(vals) do
-        if v >= mid * 0.4 then return v, now end
-    end
-    return vals[1], now
+    return low, nil
 end
 
 -- Average of the last 7 days and the trend against the 7 days before.
@@ -456,7 +445,7 @@ local hookedAH = {}
 local function hookUserSearches()
     local AH = C_AuctionHouse
     if not (AH and hooksecurefunc) then return end
-    for _, fn in ipairs({ "SendBrowseQuery", "SendSearchQuery", "SendSellSearchQuery", "RefreshCommoditySearchResults", "RefreshItemSearchResults" }) do
+    for _, fn in ipairs({ "SendBrowseQuery", "SendSearchQuery", "SendSellSearchQuery", "RefreshCommoditySearchResults", "RefreshItemSearchResults", "SearchForItemKeys" }) do
         local f = AH[fn]
         if type(f) == "function" and hookedAH[fn] ~= f then
             hookedAH[fn] = f
@@ -690,9 +679,8 @@ local function reagentsClassic(index)
     return out, complete
 end
 
--- What one reagent costs to buy for crafting: the market's price (the low
--- end of the week, so one dear listing doesn't set it) or a merchant's when
--- cheaper. Returns the price and where it's from: "vendor", "ah" (the lowest
+-- What one reagent costs to buy for crafting: the lowest listing last seen
+-- on the auction house, or a merchant's when cheaper. Returns the price and where it's from: "vendor", "ah" (the lowest
 -- listing seen lately) or "week" (the low end of the week).
 local function reagentPrice(id)
     local expect, now = M.ExpectedPrice(id)

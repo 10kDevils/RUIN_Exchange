@@ -4,7 +4,8 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
-- **Waylaid Crates in the auction house.** The Buy list has a Waylaid Crates category after Miscellaneous: each crate under it, and under each crate the bundles that fill it. Click a crate and a card beside the auction house shows what each bundle costs and names the cheapest fill (any one bundle fills the crate), and Exchange searches for it; click a bundle to search for that item. Crates you hover join the list. The card is roomier: a short note under the title, even spacing around the bundles, and the cheapest fill's price lined up with the others.
+- **Waylaid Crates in the auction house.** The Buy list has a Waylaid Crates category after Miscellaneous, with Apprentice, Journeyman, Expert and Artisan under it and each crate under the tier in its name. Click a crate and the results list every reagent that fills it, while a card beside the auction house shows what each bundle costs with a mark by the cheapest (any one bundle fills the crate); click a bundle on the card to search for just that item. Crates you hover join the list.
+- **Tooltips use the lowest price last seen.** Every Exchange price (the AH line, crate bundles, crafting and disenchanting values) now uses the lowest listing last seen on the auction house; the week's prices only stand in for an item never seen.
 - **AH deposit follows the game.** What an item nets on the auction house now takes off a deposit of 15% of its vendor price (at least 1 copper) instead of a flat 1 silver.
 
 ## 0.9.0
