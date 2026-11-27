@@ -456,9 +456,10 @@ function Crates.FillChoice(short)
     return pick
 end
 
--- the crates in your bags you can fill now: { { bag, slot, short } ... }
+-- the crates in your bags you can fill now: { { bag, slot, short } ... },
+-- and every unfilled crate in them
 function Crates.Fillable()
-    local out = {}
+    local out, all = {}, {}
     local CC = rawget(_G, "C_Container")
     local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
     if not numSlots then return out end
@@ -469,24 +470,30 @@ function Crates.Fillable()
             local short = type(name) == "string" and name:match("^Waylaid Crate:%s*(.-)%s*$")
             if short then
                 if not Crates.All()[short] then learnFromBag(bag, slot) end
-                if Crates.FillChoice(short) then out[#out + 1] = { bag = bag, slot = slot, short = short } end
+                local e = { bag = bag, slot = slot, short = short }
+                all[#all + 1] = e
+                if Crates.FillChoice(short) then out[#out + 1] = e end
             end
         end
     end
-    return out
+    return out, all
 end
 
 local fillButtons = {}
 
 local function fillText(n) return n > 0 and ("Fill crates (%d)"):format(n) or "Nothing to fill" end
 
-local BAG_FRAMES = { "ContainerFrameCombinedBags", "ContainerFrame1" }
+-- the game's bag windows, then the bag addons people use
+local BAG_FRAMES = { "ContainerFrameCombinedBags", "ContainerFrame1", "ContainerFrame2", "ContainerFrame3", "ContainerFrame4",
+    "ContainerFrame5", "ElvUI_ContainerFrame", "BagnonInventoryFrame1", "BagnonInventory1", "AdiBagsContainer1",
+    "ARKINV_Frame1", "Baganator_SingleViewBackpackViewFrame", "Baganator_CategoryViewBackpackViewFrame",
+    "BetterBagsBagBackpack", "CombuctorFrame1", "OneBagFrame" }
 
--- the open bag window the button sits beside (the combined one, or the backpack)
+-- the open bag window the button sits beside, and its name
 local function openBags()
     for _, n in ipairs(BAG_FRAMES) do
         local f = rawget(_G, n)
-        if type(f) == "table" and f.IsShown and f:IsShown() then return f end
+        if type(f) == "table" and f.IsShown and f:IsVisible() then return f, n end
     end
 end
 
@@ -496,13 +503,31 @@ function Crates.PlaceBagButton(n)
     local b = ui.bagButton
     if not b or (InCombatLockdown and InCombatLockdown()) then return end
     local bags = openBags()
-    if bags and (n or #Crates.Fillable()) > 0 then
+    local fill, all = Crates.Fillable()
+    if bags and #all > 0 then
         b:ClearAllPoints()
         b:SetPoint("TOPRIGHT", bags, "TOPLEFT", -4, -6)
         b:Show()
     else
         b:Hide()
     end
+end
+
+-- what /exchange crates prints: where the button would go and each crate in your bags
+function Crates.Report()
+    local bags, name = openBags()
+    M:Print("Bags open: " .. (name or "none Exchange knows (open your bags and try again)"))
+    local _, all = Crates.Fillable()
+    if #all == 0 then M:Print("No unfilled Waylaid Crate in your bags.") end
+    for _, e in ipairs(all) do
+        local c = Crates.FillChoice(e.short)
+        local parts = {}
+        for _, b in ipairs(Crates.All()[e.short] or {}) do parts[#parts + 1] = ("%d %s (have %d)"):format(b[1], b[2], have(b[2])) end
+        M:Print(("%s%s in bag %d slot %d: %s"):format(PREFIX, e.short, e.bag, e.slot,
+            c and ("fill with " .. c.n .. " " .. c.name) or (#parts > 0 and ("not enough of: " .. table.concat(parts, ", ")) or "its bundles aren't known yet (hover it)")))
+    end
+    local b = ui.bagButton
+    M:Print("Button: " .. (b and (b:IsShown() and "shown" or "hidden") or "not made") .. (InCombatLockdown and InCombatLockdown() and " (in combat)" or ""))
 end
 
 function Crates.RefreshFill()
@@ -528,6 +553,17 @@ function Crates.HookBags()
             bagHooks[n] = true
             f:HookScript("OnShow", function() C_Timer.After(0, Crates.RefreshFill) end)
             f:HookScript("OnHide", function() C_Timer.After(0, function() Crates.PlaceBagButton() end) end)
+        end
+    end
+    -- the game's bag keys, for windows made later or not hooked above
+    if hooksecurefunc and not bagHooks.keys then
+        bagHooks.keys = true
+        for _, fn in ipairs({ "ToggleBackpack", "OpenBackpack", "ToggleAllBags", "OpenAllBags", "CloseAllBags", "ToggleBag", "CloseBackpack" }) do
+            if type(rawget(_G, fn)) == "function" then
+                pcall(hooksecurefunc, fn, function()
+                    C_Timer.After(0.1, function() Crates.HookBags(); Crates.RefreshFill() end)
+                end)
+            end
         end
     end
 end

@@ -3221,6 +3221,9 @@ SlashCmdList.RUINEXCHANGE = function(msg)
     if cmd:lower() == "scan" then
         M.FullScan(false)
         return
+    elseif cmd:lower() == "crates" and ns.Crates then
+        ns.Crates.Report()
+        return
     elseif cmd:lower() == "tipdebug" then
         M.tipDebug = true
         M:Print("Hover a recipe or a Waylaid Crate: Exchange prints what it reads from the tooltip (once).")
