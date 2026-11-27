@@ -411,10 +411,10 @@ local function slotItem(bag, slot)
     local CC = rawget(_G, "C_Container")
     if CC and CC.GetContainerItemInfo then
         local info = CC.GetContainerItemInfo(bag, slot)
-        if info then return info.itemID or (info.hyperlink and tonumber(info.hyperlink:match("item:(%d+)"))), info.hyperlink end
+        if info then return info.itemID or (info.hyperlink and tonumber(info.hyperlink:match("item:(%d+)"))), info.hyperlink, info.stackCount end
     elseif GetContainerItemInfo then
-        local _, _, _, _, _, _, link, _, _, id = GetContainerItemInfo(bag, slot)
-        return id or (link and tonumber(link:match("item:(%d+)"))), link
+        local _, count, _, _, _, _, link, _, _, id = GetContainerItemInfo(bag, slot)
+        return id or (link and tonumber(link:match("item:(%d+)"))), link, count
     end
 end
 
@@ -434,10 +434,35 @@ local function learnFromBag(bag, slot)
     scanTip:Hide()
 end
 
+-- what your bags hold (the reagent bag too), by item and by name; read once
+-- per look (the game's own count can leave the reagent bag out)
+local held, heldAt
+local function countBags()
+    local now = GetTime()
+    if held and heldAt == now then return held end
+    held, heldAt = { byId = {}, byName = {} }, now
+    local CC = rawget(_G, "C_Container")
+    local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
+    if not numSlots then return held end
+    for bag = 0, 5 do   -- 5: the reagent bag
+        for slot = 1, numSlots(bag) or 0 do
+            local id, link, count = slotItem(bag, slot)
+            if id then
+                held.byId[id] = (held.byId[id] or 0) + (count or 1)
+                local name = GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
+                if name then held.byName[name] = (held.byName[name] or 0) + (count or 1) end
+            end
+        end
+    end
+    return held
+end
+
 local function have(name)
-    if not GetItemCount then return 0 end
+    local h = countBags()
     local id = M.CrateItem and M.CrateItem(name)
-    return (id and GetItemCount(id)) or GetItemCount(name) or 0     -- by name for an item Exchange can't place
+    local mine = math.max(id and h.byId[id] or 0, h.byName[name] or 0)
+    local game = GetItemCount and ((id and GetItemCount(id)) or GetItemCount(name)) or 0
+    return math.max(mine, tonumber(game) or 0)
 end
 
 -- the bundle to fill a crate with: of those you carry enough of, the one worth
@@ -463,7 +488,7 @@ function Crates.Fillable()
     local CC = rawget(_G, "C_Container")
     local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
     if not numSlots then return out end
-    for bag = 0, 4 do
+    for bag = 0, 5 do   -- 5: the reagent bag
         for slot = 1, numSlots(bag) or 0 do
             local id, link = slotItem(bag, slot)
             local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
@@ -565,7 +590,7 @@ function Crates.Report()
         -- anything crate-like, by its full name, to see what the game calls it
         local CC = rawget(_G, "C_Container")
         local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
-        for bag = 0, 4 do
+        for bag = 0, 5 do   -- 5: the reagent bag
             for slot = 1, (numSlots and numSlots(bag)) or 0 do
                 local id, link = slotItem(bag, slot)
                 local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))

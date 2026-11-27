@@ -1760,7 +1760,7 @@ local function bagItems()
     local items = {}
     local numSlots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
     if not numSlots then return items end
-    for bag = 0, 4 do
+    for bag = 0, 5 do   -- 5: the reagent bag
         for slot = 1, numSlots(bag) or 0 do
             local link, count, bound
             if C_Container and C_Container.GetContainerItemInfo then
