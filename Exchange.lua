@@ -3023,11 +3023,6 @@ local function buildBags(page)
     h:SetPoint("TOPLEFT", 0, -2)
     local sweep = W.Button(page, "Sweep bags", 110, function() ui.swept = true; refreshPage() end)
     sweep:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 2)
-    if ns.Crates then
-        ui.fillCrates = ns.Crates.FillButton(page, 130)
-        ui.fillCrates:SetPoint("RIGHT", sweep, "LEFT", -6, 0)
-        C_Timer.After(0, ns.Crates.RefreshFill)
-    end
     ui.bagTotals = W.Label(page, "", "GameFontHighlightSmall")
     ui.bagTotals:SetPoint("TOPLEFT", 0, -22)
     ui.bagTotals:SetPoint("RIGHT", page, "RIGHT", -6, 0)

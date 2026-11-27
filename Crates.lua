@@ -173,11 +173,7 @@ local function drawCard()
         card.total:SetText(C.dim .. "No prices yet|r")
         card.totalPrice:SetText("")
     end
-    local fy = y - 10 - 14 - 10
-    card.fill:ClearAllPoints()
-    card.fill:SetPoint("TOPLEFT", PAD, fy)
-    card.fill:SetPoint("TOPRIGHT", -PAD, fy)
-    card:SetHeight(TOP + #costs * ROW_H + 6 + 10 + 14 + 10 + 24 + PAD)
+    card:SetHeight(TOP + #costs * ROW_H + 6 + 10 + 14 + PAD)
     card:Show()
 end
 Crates.Draw = drawCard
@@ -379,8 +375,6 @@ function Crates.Build()
         card.rule2 = rule()
         card.total = W.Label(card, "", "GameFontHighlightSmall")
         card.totalPrice = W.Label(card, "", "GameFontHighlightSmall")
-        card.fill = Crates.FillButton(card, CARD_W - 2 * PAD)
-        Crates.RefreshFill()
         card:Hide()
         ui.card, ui.rows = card, {}
         if hooksecurefunc and f.SetDisplayMode then pcall(hooksecurefunc, f, "SetDisplayMode", Crates.Update) end
@@ -441,8 +435,9 @@ local function learnFromBag(bag, slot)
 end
 
 local function have(name)
+    if not GetItemCount then return 0 end
     local id = M.CrateItem and M.CrateItem(name)
-    return id and GetItemCount and (GetItemCount(id) or 0) or 0
+    return (id and GetItemCount(id)) or GetItemCount(name) or 0     -- by name for an item Exchange can't place
 end
 
 -- the bundle to fill a crate with: of those you carry enough of, the one worth
@@ -485,20 +480,63 @@ local fillButtons = {}
 
 local function fillText(n) return n > 0 and ("Fill crates (%d)"):format(n) or "Nothing to fill" end
 
+local BAG_FRAMES = { "ContainerFrameCombinedBags", "ContainerFrame1" }
+
+-- the open bag window the button sits beside (the combined one, or the backpack)
+local function openBags()
+    for _, n in ipairs(BAG_FRAMES) do
+        local f = rawget(_G, n)
+        if type(f) == "table" and f.IsShown and f:IsShown() then return f end
+    end
+end
+
+-- beside your bags while they're open and a crate can be filled (the
+-- button can't move or hide in combat, so that waits for combat to end)
+function Crates.PlaceBagButton(n)
+    local b = ui.bagButton
+    if not b or (InCombatLockdown and InCombatLockdown()) then return end
+    local bags = openBags()
+    if bags and (n or #Crates.Fillable()) > 0 then
+        b:ClearAllPoints()
+        b:SetPoint("TOPRIGHT", bags, "TOPLEFT", -4, -6)
+        b:Show()
+    else
+        b:Hide()
+    end
+end
+
 function Crates.RefreshFill()
     local n = #Crates.Fillable()
     for _, b in ipairs(fillButtons) do
         if b.SetText then b:SetText(fillText(n)) end
         if b.SetEnabled then b:SetEnabled(n > 0) end
     end
+    Crates.PlaceBagButton(n)
     return n
+end
+
+local bagHooks = {}
+function Crates.HookBags()
+    if not ui.bagButton then
+        ui.bagButton = Crates.FillButton(UIParent, 130)
+        if ui.bagButton.SetFrameStrata then ui.bagButton:SetFrameStrata("HIGH") end
+        ui.bagButton:Hide()
+    end
+    for _, n in ipairs(BAG_FRAMES) do
+        local f = rawget(_G, n)
+        if type(f) == "table" and f.HookScript and not bagHooks[n] then
+            bagHooks[n] = true
+            f:HookScript("OnShow", function() C_Timer.After(0, Crates.RefreshFill) end)
+            f:HookScript("OnHide", function() C_Timer.After(0, function() Crates.PlaceBagButton() end) end)
+        end
+    end
 end
 
 -- before the click goes to the game: aim the button at the next crate
 local function aim(s)
     if InCombatLockdown and InCombatLockdown() then return end
     local now = GetTime()
-    if Crates.fillingAt and now - Crates.fillingAt < 0.5 then s:SetAttribute("type", nil); return end   -- the same press, down and up
+    if Crates.fillingAt and now - Crates.fillingAt < 0.5 then return end   -- already aimed for this press
     local next1 = Crates.Fillable()[1]
     if not next1 then
         s:SetAttribute("type", nil)
@@ -509,6 +547,7 @@ local function aim(s)
     s:SetAttribute("type", "item")
     s:SetAttribute("item", next1.bag .. " " .. next1.slot)
     Crates.filling = { short = next1.short, choice = choice, bag = next1.bag, slot = next1.slot, at = now }
+    if choice then M:Print(("Filling %s%s with %d %s."):format(PREFIX, next1.short, choice.n, choice.name)) end
     Crates.fillingAt = now
     -- a crate still unfilled after a while: its window wasn't one Exchange could answer
     C_Timer.After(4, function()
@@ -525,7 +564,11 @@ end
 local function makeSecure(parent, name)
     local ok, s = pcall(CreateFrame, "Button", name, parent, "SecureActionButtonTemplate")
     if not ok or not s then return nil end
-    if s.RegisterForClicks then s:RegisterForClicks("AnyUp", "AnyDown") end
+    -- one use per press: the game acts on the key's down or up as its "cast on key down" option says
+    if s.RegisterForClicks then
+        local down = GetCVarBool and GetCVarBool("ActionButtonUseKeyDown")
+        s:RegisterForClicks(down and "AnyDown" or "AnyUp")
+    end
     s:SetScript("PreClick", aim)
     s:SetScript("PostClick", function() C_Timer.After(1, Crates.RefreshFill) end)
     return s
@@ -631,6 +674,10 @@ local function onEvent(_, event)
         answerChoice()
     elseif event == "GOSSIP_SHOW" then
         answerGossip()
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        Crates.PlaceBagButton()
+    elseif event == "PLAYER_LOGIN" then
+        Crates.HookBags()
     elseif event == "BAG_UPDATE_DELAYED" and #fillButtons > 0 and not fillQueued then
         fillQueued = true
         C_Timer.After(0.5, function() fillQueued = nil; Crates.RefreshFill() end)
@@ -655,12 +702,13 @@ function Crates.Init(module, savedDb)
     end
     local ev = CreateFrame("Frame")
     for _, e in ipairs({ "AUCTION_HOUSE_SHOW", "COMMODITY_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_UPDATED", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
-                          "PLAYER_CHOICE_UPDATE", "GOSSIP_SHOW", "BAG_UPDATE_DELAYED" }) do
+                          "PLAYER_CHOICE_UPDATE", "GOSSIP_SHOW", "BAG_UPDATE_DELAYED", "PLAYER_REGEN_ENABLED", "PLAYER_LOGIN" }) do
         pcall(ev.RegisterEvent, ev, e)
     end
     -- the key binding (Key Bindings > RUIN Exchange) clicks this hidden one
     local key = makeSecure(UIParent, "RUIN_ExchangeCrateFill")
     if key then key:Hide(); Crates.keyButton = key end
+    Crates.HookBags()
     ev:SetScript("OnEvent", onEvent)
     Crates.ui = ui
     M.Crates = Crates
