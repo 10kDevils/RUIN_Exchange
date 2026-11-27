@@ -2,4 +2,6 @@
 	<Binding name="RUIN_EXCHANGE_OPEN" header="RUIN_EXCHANGE" category="ADDONS">
 		RUIN_Exchange_Open()
 	</Binding>
+	<Binding name="CLICK RUIN_ExchangeCrateFill:LeftButton" category="ADDONS">
+	</Binding>
 </Bindings>

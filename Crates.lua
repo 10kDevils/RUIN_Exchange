@@ -173,7 +173,11 @@ local function drawCard()
         card.total:SetText(C.dim .. "No prices yet|r")
         card.totalPrice:SetText("")
     end
-    card:SetHeight(TOP + #costs * ROW_H + 6 + 10 + 14 + PAD)
+    local fy = y - 10 - 14 - 10
+    card.fill:ClearAllPoints()
+    card.fill:SetPoint("TOPLEFT", PAD, fy)
+    card.fill:SetPoint("TOPRIGHT", -PAD, fy)
+    card:SetHeight(TOP + #costs * ROW_H + 6 + 10 + 14 + 10 + 24 + PAD)
     card:Show()
 end
 Crates.Draw = drawCard
@@ -375,6 +379,8 @@ function Crates.Build()
         card.rule2 = rule()
         card.total = W.Label(card, "", "GameFontHighlightSmall")
         card.totalPrice = W.Label(card, "", "GameFontHighlightSmall")
+        card.fill = Crates.FillButton(card, CARD_W - 2 * PAD)
+        Crates.RefreshFill()
         card:Hide()
         ui.card, ui.rows = card, {}
         if hooksecurefunc and f.SetDisplayMode then pcall(hooksecurefunc, f, "SetDisplayMode", Crates.Update) end
@@ -395,6 +401,225 @@ function Crates.Build()
     return true
 end
 
+---------------------------------------------------------------------------
+-- Filling crates from your bags
+---------------------------------------------------------------------------
+-- The game only lets a click of yours use an item, so filling is a button:
+-- each click uses the next crate you can fill, and when the crate's choice
+-- window opens Exchange picks the bundle worth the least on the auction house
+-- among those you carry enough of. Keep clicking (or press its key) until it
+-- reads Nothing to fill.
+local FILL_WAIT = 15            -- seconds a crate's choice window is waited for
+
+local function strip(t) return (tostring(t or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
+
+local function slotItem(bag, slot)
+    local CC = rawget(_G, "C_Container")
+    if CC and CC.GetContainerItemInfo then
+        local info = CC.GetContainerItemInfo(bag, slot)
+        if info then return info.itemID or (info.hyperlink and tonumber(info.hyperlink:match("item:(%d+)"))), info.hyperlink end
+    elseif GetContainerItemInfo then
+        local _, _, _, _, _, _, link, _, _, id = GetContainerItemInfo(bag, slot)
+        return id or (link and tonumber(link:match("item:(%d+)"))), link
+    end
+end
+
+local scanTip
+-- what a crate in your bags asks for, read from its tooltip when Exchange hasn't met it
+local function learnFromBag(bag, slot)
+    if not (CreateFrame and M.CrateBundles) then return end
+    if not scanTip then
+        local ok, t = pcall(CreateFrame, "GameTooltip", "RUIN_CrateScanTip", UIParent, "GameTooltipTemplate")
+        if not ok or not t then return end
+        scanTip = t
+    end
+    if not scanTip.SetBagItem then return end
+    scanTip:SetOwner(UIParent, "ANCHOR_NONE")
+    pcall(scanTip.SetBagItem, scanTip, bag, slot)
+    pcall(M.CrateBundles, scanTip)
+    scanTip:Hide()
+end
+
+local function have(name)
+    local id = M.CrateItem and M.CrateItem(name)
+    return id and GetItemCount and (GetItemCount(id) or 0) or 0
+end
+
+-- the bundle to fill a crate with: of those you carry enough of, the one worth
+-- the least on the auction house (unpriced ones last). nil when none fits.
+function Crates.FillChoice(short)
+    local list = Crates.All()[short]
+    if not list then return nil end
+    local pick, pickCost
+    for _, e in ipairs(list) do
+        if have(e[2]) >= e[1] then
+            local unit = unitPrice(e[2])
+            local cost = unit and unit * e[1] or math.huge
+            if not pick or cost < pickCost then pick, pickCost = { n = e[1], name = e[2], cost = unit and cost }, cost end
+        end
+    end
+    return pick
+end
+
+-- the crates in your bags you can fill now: { { bag, slot, short } ... }
+function Crates.Fillable()
+    local out = {}
+    local CC = rawget(_G, "C_Container")
+    local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
+    if not numSlots then return out end
+    for bag = 0, 4 do
+        for slot = 1, numSlots(bag) or 0 do
+            local id, link = slotItem(bag, slot)
+            local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
+            local short = type(name) == "string" and name:match("^Waylaid Crate:%s*(.-)%s*$")
+            if short then
+                if not Crates.All()[short] then learnFromBag(bag, slot) end
+                if Crates.FillChoice(short) then out[#out + 1] = { bag = bag, slot = slot, short = short } end
+            end
+        end
+    end
+    return out
+end
+
+local fillButtons = {}
+
+local function fillText(n) return n > 0 and ("Fill crates (%d)"):format(n) or "Nothing to fill" end
+
+function Crates.RefreshFill()
+    local n = #Crates.Fillable()
+    for _, b in ipairs(fillButtons) do
+        if b.SetText then b:SetText(fillText(n)) end
+        if b.SetEnabled then b:SetEnabled(n > 0) end
+    end
+    return n
+end
+
+-- before the click goes to the game: aim the button at the next crate
+local function aim(s)
+    if InCombatLockdown and InCombatLockdown() then return end
+    local now = GetTime()
+    if Crates.fillingAt and now - Crates.fillingAt < 0.5 then s:SetAttribute("type", nil); return end   -- the same press, down and up
+    local next1 = Crates.Fillable()[1]
+    if not next1 then
+        s:SetAttribute("type", nil)
+        M:Print("No Waylaid Crate in your bags can be filled with what you carry.")
+        return
+    end
+    local choice = Crates.FillChoice(next1.short)
+    s:SetAttribute("type", "item")
+    s:SetAttribute("item", next1.bag .. " " .. next1.slot)
+    Crates.filling = { short = next1.short, choice = choice, bag = next1.bag, slot = next1.slot, at = now }
+    Crates.fillingAt = now
+    -- a crate still unfilled after a while: its window wasn't one Exchange could answer
+    C_Timer.After(4, function()
+        local f = Crates.filling
+        if not f or f.at ~= now then return end
+        local id, link = slotItem(f.bag, f.slot)
+        local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
+        if name == PREFIX .. f.short and f.choice and not f.answered then
+            M:Print(("Pick %d %s in the crate's window (the cheapest you carry)."):format(f.choice.n, f.choice.name))
+        end
+    end)
+end
+
+local function makeSecure(parent, name)
+    local ok, s = pcall(CreateFrame, "Button", name, parent, "SecureActionButtonTemplate")
+    if not ok or not s then return nil end
+    if s.RegisterForClicks then s:RegisterForClicks("AnyUp", "AnyDown") end
+    s:SetScript("PreClick", aim)
+    s:SetScript("PostClick", function() C_Timer.After(1, Crates.RefreshFill) end)
+    return s
+end
+
+-- a Fill crates button: RUIN's look with the game's secure button laid over it
+function Crates.FillButton(parent, width)
+    local b = W.Button(parent, fillText(0), width or 130)
+    local s = makeSecure(b)
+    if s then
+        s:SetAllPoints(b)
+        s:SetFrameLevel((b:GetFrameLevel() or 1) + 5)
+        s:SetScript("OnEnter", function()
+            if b.LockHighlight then b:LockHighlight() end
+            if GameTooltip then
+                W.TipOwner(s, GameTooltip)
+                GameTooltip:SetText("Fill Waylaid Crates")
+                GameTooltip:AddLine("Each click fills the next crate in your bags with the bundle worth the least on the auction house among those you carry. Also on a key: Key Bindings > RUIN Exchange.", 1, 1, 1, true)
+                GameTooltip:Show()
+            end
+        end)
+        s:SetScript("OnLeave", function() if b.UnlockHighlight then b:UnlockHighlight() end; if GameTooltip then GameTooltip:Hide() end end)
+        b.secure = s
+    end
+    fillButtons[#fillButtons + 1] = b
+    return b
+end
+
+-- the crate's choice window: answer it with the chosen bundle
+local function optionText(o)
+    local parts = { o.header, o.description, o.name, o.text, o.title }
+    for _, bt in ipairs(o.buttons or {}) do parts[#parts + 1] = bt.text end
+    local out = {}
+    for _, p in ipairs(parts) do if type(p) == "string" then out[#out + 1] = strip(p) end end
+    return table.concat(out, " "):lower()
+end
+
+-- options: { { text = "...", pick = function() end } ... }; true when one was picked
+function Crates.Answer(options)
+    local f = Crates.filling
+    if not (f and f.choice and GetTime() - f.at < FILL_WAIT) or f.answered then return false end
+    local best, bestCost
+    for _, o in ipairs(options) do
+        for _, e in ipairs(Crates.All()[f.short] or {}) do
+            if o.text:find(e[2]:lower(), 1, true) and have(e[2]) >= e[1] then
+                local unit = unitPrice(e[2])
+                local cost = unit and unit * e[1] or math.huge
+                if e[2] == f.choice.name then cost = -1 end           -- the one chosen when the button was pressed
+                if not best or cost < bestCost then best, bestCost = o, cost end
+            end
+        end
+    end
+    if not best then
+        if M.tipDebug or #options > 0 then
+            local seen = {}
+            for i, o in ipairs(options) do seen[i] = o.text end
+            M:Print("crate window options: " .. table.concat(seen, " | "))
+        end
+        return false
+    end
+    f.answered = true
+    pcall(best.pick)
+    C_Timer.After(1, Crates.RefreshFill)
+    return true
+end
+
+local function answerChoice()
+    local PC = rawget(_G, "C_PlayerChoice")
+    local info = PC and PC.GetCurrentPlayerChoiceInfo and PC.GetCurrentPlayerChoiceInfo()
+    if not (info and info.options) then return end
+    local opts = {}
+    for _, o in ipairs(info.options) do
+        local bt = o.buttons and o.buttons[1]
+        local id = (bt and bt.id) or o.responseID or o.id
+        if id then opts[#opts + 1] = { text = optionText(o), pick = function() PC.SendPlayerChoiceResponse(id) end } end
+    end
+    if Crates.Answer(opts) and rawget(_G, "PlayerChoiceFrame") and PlayerChoiceFrame.Hide then
+        C_Timer.After(0.2, function() if PlayerChoiceFrame:IsShown() then pcall(HideUIPanel or PlayerChoiceFrame.Hide, PlayerChoiceFrame) end end)
+    end
+end
+
+local function answerGossip()
+    local G = rawget(_G, "C_GossipInfo")
+    local opts = {}
+    if G and G.GetOptions then
+        for _, o in ipairs(G.GetOptions() or {}) do
+            local id = o.gossipOptionID
+            if id then opts[#opts + 1] = { text = optionText(o), pick = function() G.SelectOption(id) end } end
+        end
+    end
+    Crates.Answer(opts)
+end
+
+local fillQueued
 local function onEvent(_, event)
     if event == "AUCTION_HOUSE_SHOW" then
         Crates.Build()
@@ -402,6 +627,13 @@ local function onEvent(_, event)
     elseif (event == "COMMODITY_SEARCH_RESULTS_UPDATED" or event == "ITEM_SEARCH_RESULTS_UPDATED"
             or event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED") and ui.card and ui.card:IsShown() then
         C_Timer.After(0.2, drawCard)   -- after Exchange reads the new prices
+    elseif event == "PLAYER_CHOICE_UPDATE" then
+        answerChoice()
+    elseif event == "GOSSIP_SHOW" then
+        answerGossip()
+    elseif event == "BAG_UPDATE_DELAYED" and #fillButtons > 0 and not fillQueued then
+        fillQueued = true
+        C_Timer.After(0.5, function() fillQueued = nil; Crates.RefreshFill() end)
     end
 end
 
@@ -422,9 +654,13 @@ function Crates.Init(module, savedDb)
         end
     end
     local ev = CreateFrame("Frame")
-    for _, e in ipairs({ "AUCTION_HOUSE_SHOW", "COMMODITY_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_UPDATED", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" }) do
+    for _, e in ipairs({ "AUCTION_HOUSE_SHOW", "COMMODITY_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_UPDATED", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED",
+                          "PLAYER_CHOICE_UPDATE", "GOSSIP_SHOW", "BAG_UPDATE_DELAYED" }) do
         pcall(ev.RegisterEvent, ev, e)
     end
+    -- the key binding (Key Bindings > RUIN Exchange) clicks this hidden one
+    local key = makeSecure(UIParent, "RUIN_ExchangeCrateFill")
+    if key then key:Hide(); Crates.keyButton = key end
     ev:SetScript("OnEvent", onEvent)
     Crates.ui = ui
     M.Crates = Crates
