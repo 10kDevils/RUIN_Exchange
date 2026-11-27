@@ -483,27 +483,68 @@ local fillButtons = {}
 
 local function fillText(n) return n > 0 and ("Fill crates (%d)"):format(n) or "Nothing to fill" end
 
+local bagHooks = {}
+
 -- the game's bag windows, then the bag addons people use
 local BAG_FRAMES = { "ContainerFrameCombinedBags", "ContainerFrame1", "ContainerFrame2", "ContainerFrame3", "ContainerFrame4",
     "ContainerFrame5", "ElvUI_ContainerFrame", "BagnonInventoryFrame1", "BagnonInventory1", "AdiBagsContainer1",
     "ARKINV_Frame1", "Baganator_SingleViewBackpackViewFrame", "Baganator_CategoryViewBackpackViewFrame",
     "BetterBagsBagBackpack", "CombuctorFrame1", "OneBagFrame" }
 
+-- bag addons that name their windows after a skin or a view
+-- (Baganator: "Baganator_CategoryViewBackpackViewFrame" .. skin), found once by name
+local ADDON_BAGS = { "^Baganator_.*Backpack.*Frame", "^Bagnon.*Inventory", "^BetterBags.*Backpack", "^AdiBags.*Container" }
+local found, lastLook = {}, -999
+
+-- only right after you open your bags (a look through every global is too dear to do often)
+local function lookForAddonBags()
+    local now = GetTime()
+    if not Crates.bagsOpened or now - lastLook < 2 then return end
+    lastLook, Crates.bagsOpened = now, nil
+    for name, v in pairs(_G) do
+        if type(name) == "string" and type(v) == "table" and not found[name] and name:find("Bag", 1, true) then
+            for _, pat in ipairs(ADDON_BAGS) do
+                if name:find(pat) and type(v.IsVisible) == "function" then found[name] = true; break end
+            end
+        end
+    end
+end
+
+local function visible(n)
+    local f = rawget(_G, n)
+    return type(f) == "table" and type(f.IsVisible) == "function" and f:IsVisible() and f or nil
+end
+
 -- the open bag window the button sits beside, and its name
 local function openBags()
     for _, n in ipairs(BAG_FRAMES) do
-        local f = rawget(_G, n)
-        if type(f) == "table" and f.IsShown and f:IsVisible() then return f, n end
+        local f = visible(n)
+        if f then return f, n end
+    end
+    for n in pairs(found) do
+        local f = visible(n)
+        if f then return f, n end
+    end
+    lookForAddonBags()
+    for n in pairs(found) do
+        local f = visible(n)
+        if f then return f, n end
     end
 end
+Crates.OpenBags = openBags
 
 -- beside your bags while they're open and a crate can be filled (the
 -- button can't move or hide in combat, so that waits for combat to end)
 function Crates.PlaceBagButton(n)
     local b = ui.bagButton
     if not b or (InCombatLockdown and InCombatLockdown()) then return end
-    local bags = openBags()
-    local fill, all = Crates.Fillable()
+    local bags, bagName = openBags()
+    local _, all = Crates.Fillable()
+    if bags and bagName and not bagHooks[bagName] and bags.HookScript then
+        bagHooks[bagName] = true
+        bags:HookScript("OnHide", function() C_Timer.After(0, function() Crates.PlaceBagButton() end) end)
+        bags:HookScript("OnShow", function() C_Timer.After(0, Crates.RefreshFill) end)
+    end
     if bags and #all > 0 then
         b:ClearAllPoints()
         b:SetPoint("TOPRIGHT", bags, "TOPLEFT", -4, -6)
@@ -515,10 +556,25 @@ end
 
 -- what /exchange crates prints: where the button would go and each crate in your bags
 function Crates.Report()
+    Crates.bagsOpened = true
     local bags, name = openBags()
     M:Print("Bags open: " .. (name or "none Exchange knows (open your bags and try again)"))
     local _, all = Crates.Fillable()
-    if #all == 0 then M:Print("No unfilled Waylaid Crate in your bags.") end
+    if #all == 0 then
+        M:Print("No unfilled Waylaid Crate in your bags.")
+        -- anything crate-like, by its full name, to see what the game calls it
+        local CC = rawget(_G, "C_Container")
+        local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
+        for bag = 0, 4 do
+            for slot = 1, (numSlots and numSlots(bag)) or 0 do
+                local id, link = slotItem(bag, slot)
+                local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
+                if type(name) == "string" and (name:find("Crate") or name:find("Waylaid")) then
+                    M:Print(("  bag %d slot %d: [%s] (item %s)"):format(bag, slot, name, tostring(id)))
+                end
+            end
+        end
+    end
     for _, e in ipairs(all) do
         local c = Crates.FillChoice(e.short)
         local parts = {}
@@ -540,7 +596,6 @@ function Crates.RefreshFill()
     return n
 end
 
-local bagHooks = {}
 function Crates.HookBags()
     if not ui.bagButton then
         ui.bagButton = Crates.FillButton(UIParent, 130)
@@ -561,6 +616,7 @@ function Crates.HookBags()
         for _, fn in ipairs({ "ToggleBackpack", "OpenBackpack", "ToggleAllBags", "OpenAllBags", "CloseAllBags", "ToggleBag", "CloseBackpack" }) do
             if type(rawget(_G, fn)) == "function" then
                 pcall(hooksecurefunc, fn, function()
+                    Crates.bagsOpened = true
                     C_Timer.After(0.1, function() Crates.HookBags(); Crates.RefreshFill() end)
                 end)
             end
