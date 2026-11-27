@@ -12,4 +12,5 @@
 Exchange.lua
 Treasury.lua
 Watch.lua
+Crates.lua
 History.lua

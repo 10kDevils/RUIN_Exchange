@@ -3157,6 +3157,7 @@ function M:OnEnable()
     self:AddTab("Exchange", buildPage)
     ns.Treasury.Init(self, db)
     ns.Watch.Init(self, db)
+    if ns.Crates then ns.Crates.Init(self, db) end
     ns.History.Init(self, db, ns.ExchangeInternals)
     -- Guild > People "By profession" (RUIN Core 0.4.3)
     if R.AddProfessionSource then

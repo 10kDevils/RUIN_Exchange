@@ -2,6 +2,10 @@
 
 Versioning: the third number counts the meaningful changes made since the second number last went up.
 
+## Unreleased
+
+- **Waylaid Crates on the auction house.** A Waylaid Crates list sits under the Buy page. Pick a crate and a card beside the auction house lists each bundle that fills it with what it costs, plus the whole crate; Exchange searches for the first one, and clicking any row searches for that item. Crates you hover are added to the list.
+
 ## 0.9.0
 
 - **Crate tooltips are sturdier**: if a Waylaid Crate's bundle list can't be worked out, the rest of the RUIN: Exchange box still shows and the error doesn't come back on every hover.
