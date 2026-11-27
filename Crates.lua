@@ -457,6 +457,23 @@ local function countBags()
     return held
 end
 
+-- the bag and slot of your biggest stack of an item (the reagent bag too)
+function Crates.StackOf(name)
+    local id = M.CrateItem and M.CrateItem(name)
+    local CC = rawget(_G, "C_Container")
+    local numSlots = (CC and CC.GetContainerNumSlots) or rawget(_G, "GetContainerNumSlots")
+    if not numSlots then return nil end
+    local bestBag, bestSlot, bestN
+    for bag = 0, 5 do   -- 5: the reagent bag
+        for slot = 1, numSlots(bag) or 0 do
+            local sid, link, count = slotItem(bag, slot)
+            local match = sid and (sid == id or (GetItemInfo and GetItemInfo(sid) or (link and link:match("%[(.-)%]"))) == name)
+            if match and (not bestN or (count or 1) > bestN) then bestBag, bestSlot, bestN = bag, slot, count or 1 end
+        end
+    end
+    return bestBag, bestSlot
+end
+
 local function have(name)
     local h = countBags()
     local id = M.CrateItem and M.CrateItem(name)
@@ -661,8 +678,17 @@ local function aim(s)
         return
     end
     local choice = Crates.FillChoice(next1.short)
-    s:SetAttribute("type", "item")
-    s:SetAttribute("item", next1.bag .. " " .. next1.slot)
+    -- using a crate asks you to pick the reagent in your bags: the same press
+    -- picks the biggest stack of the cheapest bundle you carry
+    local rb, rs
+    if choice then rb, rs = Crates.StackOf(choice.name) end
+    if rb then
+        s:SetAttribute("type", "macro")
+        s:SetAttribute("macrotext", ("/use %d %d\n/use %d %d"):format(next1.bag, next1.slot, rb, rs))
+    else
+        s:SetAttribute("type", "item")
+        s:SetAttribute("item", next1.bag .. " " .. next1.slot)
+    end
     Crates.filling = { short = next1.short, choice = choice, bag = next1.bag, slot = next1.slot, at = now }
     if choice then M:Print(("Filling %s%s with %d %s."):format(PREFIX, next1.short, choice.n, choice.name)) end
     Crates.fillingAt = now
