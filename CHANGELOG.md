@@ -4,7 +4,7 @@ Versioning: the third number counts the meaningful changes made since the second
 
 ## Unreleased
 
-- **Waylaid Crates in the auction house.** The Buy list has a Waylaid Crates category after Miscellaneous: each crate under it, and under each crate the bundles that fill it. Click a crate and a card beside the auction house shows what each bundle costs and names the cheapest fill (any one bundle fills the crate), and Exchange searches for it; click a bundle to search for that item. Crates you hover join the list.
+- **Waylaid Crates in the auction house.** The Buy list has a Waylaid Crates category after Miscellaneous: each crate under it, and under each crate the bundles that fill it. Click a crate and a card beside the auction house shows what each bundle costs and names the cheapest fill (any one bundle fills the crate), and Exchange searches for it; click a bundle to search for that item. Crates you hover join the list. The card is roomier: a short note under the title, even spacing around the bundles, and the cheapest fill's price lined up with the others.
 - **AH deposit follows the game.** What an item nets on the auction house now takes off a deposit of 15% of its vendor price (at least 1 copper) instead of a flat 1 silver.
 
 ## 0.9.0

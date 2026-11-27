@@ -19,7 +19,7 @@ local ui = {}
 local fillCategory
 
 local PREFIX = "Waylaid Crate: "
-local ROW_H, CARD_W = 22, 250
+local ROW_H, CARD_W, PAD, TOP = 24, 290, 14, 62   -- TOP: where the first row starts
 
 -- the crates known before any is hovered: short name -> { { n, name }, ... }
 Crates.KNOWN = {
@@ -131,26 +131,39 @@ local function drawCard()
     for i, c in ipairs(costs) do
         local row = ui.rows[i]
         if not row then
-            row = W.MenuRow(card, CARD_W - 16)
+            row = W.MenuRow(card, CARD_W - 2 * (PAD - 6))
             row.price = W.Label(row, "", "GameFontHighlightSmall")
-            row.price:SetPoint("RIGHT", -6, 0)
+            row.price:SetPoint("RIGHT", -8, 0)
             row:SetScript("OnClick", function(self) Crates.Search(self.item); drawCard() end)
             ui.rows[i] = row
         end
         row.item = c.name
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", 8, -30 - (i - 1) * ROW_H)
+        row:SetPoint("TOPLEFT", PAD - 6, -TOP - (i - 1) * ROW_H)
+        row:SetPoint("TOPRIGHT", -(PAD - 6), -TOP - (i - 1) * ROW_H)
+        row:SetHeight(ROW_H - 2)
         row:SetText(("%d %s"):format(c.n, c.name))
         row.price:SetText(c.total and W.Money(c.total) or (C.dim .. "none yet|r"))
         if Crates.lastSearch == c.name then row:LockHighlight() else row:UnlockHighlight() end
         row:Show()
     end
     for i = #costs + 1, #ui.rows do ui.rows[i]:Hide() end
+    local y = -TOP - #costs * ROW_H - 6
+    card.rule2:ClearAllPoints()
+    card.rule2:SetPoint("TOPLEFT", PAD, y)
+    card.rule2:SetPoint("TOPRIGHT", -PAD, y)
     card.total:ClearAllPoints()
-    card.total:SetPoint("TOPLEFT", 12, -36 - #costs * ROW_H)
-    card.total:SetText(best and (C.white .. "Cheapest fill:|r " .. best.n .. " " .. best.name .. "  " .. W.Money(best.total))
-        or (C.dim .. "Any one bundle fills it. No prices yet.|r"))
-    card:SetHeight(58 + #costs * ROW_H)
+    card.total:SetPoint("TOPLEFT", PAD, y - 10)
+    card.totalPrice:ClearAllPoints()
+    card.totalPrice:SetPoint("TOPRIGHT", -PAD, y - 10)
+    if best then
+        card.total:SetText(C.white .. "Cheapest fill:|r " .. best.n .. " " .. best.name)
+        card.totalPrice:SetText(W.Money(best.total))
+    else
+        card.total:SetText(C.dim .. "No prices yet|r")
+        card.totalPrice:SetText("")
+    end
+    card:SetHeight(TOP + #costs * ROW_H + 6 + 10 + 14 + PAD)
     card:Show()
 end
 Crates.Draw = drawCard
@@ -298,10 +311,25 @@ function Crates.Build()
     if not ui.card then
         local card = W.Card(f)
         card:SetSize(CARD_W, 120)
-        card:SetPoint("TOPLEFT", f, "TOPRIGHT", 4, 0)
+        card:SetPoint("TOPLEFT", f, "TOPRIGHT", 6, -2)
         card.title = W.Label(card, "", "GameFontNormal")
-        card.title:SetPoint("TOPLEFT", 12, -10)
+        card.title:SetPoint("TOPLEFT", PAD, -PAD)
+        card.title:SetPoint("RIGHT", -PAD, 0)
+        card.title:SetJustifyH("LEFT")
+        card.hint = W.Label(card, C.dim .. "Any one bundle fills it. Click one to search.|r", "GameFontDisableSmall")
+        card.hint:SetPoint("TOPLEFT", PAD, -PAD - 20)
+        local function rule()
+            local t = card:CreateTexture(nil, "ARTWORK")
+            t:SetColorTexture(1, 1, 1, 0.1)
+            t:SetHeight(1)
+            return t
+        end
+        card.rule1 = rule()
+        card.rule1:SetPoint("TOPLEFT", PAD, -TOP + 8)
+        card.rule1:SetPoint("TOPRIGHT", -PAD, -TOP + 8)
+        card.rule2 = rule()
         card.total = W.Label(card, "", "GameFontHighlightSmall")
+        card.totalPrice = W.Label(card, "", "GameFontHighlightSmall")
         card:Hide()
         ui.card, ui.rows = card, {}
         if hooksecurefunc and f.SetDisplayMode then pcall(hooksecurefunc, f, "SetDisplayMode", Crates.Update) end
