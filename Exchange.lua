@@ -38,14 +38,15 @@ local DEFAULTS = { prices = {}, vendor = {}, rskill = {}, recipeBook = {}, craft
 local PRICE_BATCH = 40
 local HISTORY_DAYS = 14
 local REQUEST_HOURS = 24
-local AH_DEPOSIT = 100          -- listing costs at least 1 silver, lost whether it sells or not
+local AH_DEPOSIT = 0.15         -- listing costs 15% of what a vendor pays (12 hours), at least 1 copper; lost whether it sells or not
 local AH_CUT = 0.05             -- the auction house keeps 5% of the sale
 
 -- What selling on the auction house actually brings in: the price less the
--- house's cut and the deposit (at least 1 silver).
-local function ahNet(unit, count)
+-- house's cut and the deposit (from the vendor price, at least 1 copper).
+local function ahNet(unit, count, sell)
     if not unit then return nil end
-    return math.floor(unit * (count or 1) * (1 - AH_CUT)) - AH_DEPOSIT
+    count = count or 1
+    return math.floor(unit * count * (1 - AH_CUT)) - math.max(1, math.floor((tonumber(sell) or 0) * count * AH_DEPOSIT))
 end
 local SKILLUP_CHANCE = { [0] = 1, [1] = 0.75, [2] = 0.25 }        -- orange, yellow, green
 local OVERTIME_PER_RANK = 0.04      -- Working Overtime (Legacy): +4% skill-up chance a rank, 5 ranks
@@ -1808,7 +1809,7 @@ local function classify(it)
         return (it.sell > 0) and "vendor" or "keep", "soulbound"
     end
     local n = math.max(1, tonumber(it.count) or 1)
-    if p and ahNet(p, n) > it.sell * n then return "ah", "RUIN price " .. W.Money(p) end
+    if p and ahNet(p, n, it.sell) > it.sell * n then return "ah", "RUIN price " .. W.Money(p) end
     if p then return "vendor", "after the AH deposit and cut, the vendor pays more" end
     if it.sell > 0 then return "check", "no RUIN price yet" end
     return "keep", "can't be sold to a vendor"
@@ -1944,7 +1945,7 @@ local function saleValue(id, n)
     n = n or 1
     local _, _, _, sell = itemInfo(id)
     local p = not cannotTrade(id) and price(id) or nil
-    local net = p and ahNet(p, n) or nil
+    local net = p and ahNet(p, n, sell) or nil
     local vend = sell and sell > 0 and sell * n or nil
     if not (net or vend) then return nil end
     return math.max(net or 0, vend or 0)
@@ -2160,7 +2161,7 @@ local function priceLines(link, count, bound)
         if expect then
             -- what the stack nets after the deposit and cut, at the low end of
             -- the week's prices
-            ahRow = { label = "AH", value = math.max(0, ahNet(expect, count)) }
+            ahRow = { label = "AH", value = math.max(0, ahNet(expect, count, vendor)) }
             rows[#rows + 1] = ahRow
         end
     end

@@ -1,9 +1,11 @@
 -- RUIN Exchange: Waylaid Crates on the auction house
--- A "Waylaid Crates" list under the auction house's Buy page. Pick a crate
--- and a card beside the auction house lists what fills it, each bundle with
--- what it costs; Exchange searches for the first one, and a click on any row
--- searches for that one. Crates you hover are learned, so a new kind shows up
--- in the list too.
+-- A "Waylaid Crates" category in the auction house's Buy list, after
+-- Miscellaneous: each crate under it, and under each crate the bundles that
+-- fill it. Clicking a crate opens a card beside the auction house with what
+-- each bundle costs (any one bundle fills the crate; the cheapest is named)
+-- and searches for the cheapest; clicking a bundle searches for that item.
+-- Crates you hover are learned, so a new kind shows up too. Where the game's
+-- category list can't take it, a dropdown under the Buy page does the same.
 local ADDON, ns = ...
 local R = RUIN_API
 if not R then return end
@@ -14,6 +16,7 @@ local Crates = {}
 ns.Crates = Crates
 local M, db
 local ui = {}
+local fillCategory
 
 local PREFIX = "Waylaid Crate: "
 local ROW_H, CARD_W = 22, 250
@@ -59,6 +62,7 @@ function Crates.Learn(title, bundles)
     if same then return end
     learned()[short] = list
     if ui.dropdown then ui.dropdown.Refresh() end
+    if ui.category then fillCategory(); Crates.RefreshList() end
 end
 
 local function unitPrice(name)
@@ -67,17 +71,18 @@ local function unitPrice(name)
     return (M.ExpectedPrice and M.ExpectedPrice(id)) or (db.prices and db.prices[id] and db.prices[id].p)
 end
 
--- one crate's bundles with prices: { { n, name, unit, total } ... }, crate total (nil when any is missing)
+-- one crate's bundles with prices: { { n, name, unit, total } ... }, and the
+-- cheapest priced bundle (any one bundle fills the crate)
 function Crates.Costs(short)
     local list = Crates.All()[short]
     if not list then return nil end
-    local out, sum, missing = {}, 0, false
+    local out, best = {}, nil
     for i, e in ipairs(list) do
         local unit = unitPrice(e[2])
         out[i] = { n = e[1], name = e[2], unit = unit, total = unit and unit * e[1] }
-        if unit then sum = sum + unit * e[1] else missing = true end
+        if out[i].total and (not best or out[i].total < best.total) then best = out[i] end
     end
-    return out, (not missing) and sum or nil
+    return out, best
 end
 
 ---------------------------------------------------------------------------
@@ -106,7 +111,7 @@ function Crates.Search(name)
 end
 
 ---------------------------------------------------------------------------
--- The dropdown and the card
+-- The card
 ---------------------------------------------------------------------------
 local function onBuyPage()
     local f = rawget(_G, "AuctionHouseFrame")
@@ -120,7 +125,7 @@ local function drawCard()
     local card = ui.card
     if not card then return end
     local short = db.crateSel
-    local costs, sum = Crates.Costs(short or "")
+    local costs, best = Crates.Costs(short or "")
     if not costs then card:Hide(); return end
     card.title:SetText(C.gold .. PREFIX .. "|r" .. C.white .. short .. "|r")
     for i, c in ipairs(costs) do
@@ -129,7 +134,7 @@ local function drawCard()
             row = W.MenuRow(card, CARD_W - 16)
             row.price = W.Label(row, "", "GameFontHighlightSmall")
             row.price:SetPoint("RIGHT", -6, 0)
-            row:SetScript("OnClick", function(self) Crates.Search(self.item) end)
+            row:SetScript("OnClick", function(self) Crates.Search(self.item); drawCard() end)
             ui.rows[i] = row
         end
         row.item = c.name
@@ -143,32 +148,167 @@ local function drawCard()
     for i = #costs + 1, #ui.rows do ui.rows[i]:Hide() end
     card.total:ClearAllPoints()
     card.total:SetPoint("TOPLEFT", 12, -36 - #costs * ROW_H)
-    card.total:SetText(C.white .. "Whole crate:|r " .. (sum and W.Money(sum) or (C.dim .. "some prices missing|r")))
+    card.total:SetText(best and (C.white .. "Cheapest fill:|r " .. best.n .. " " .. best.name .. "  " .. W.Money(best.total))
+        or (C.dim .. "Any one bundle fills it. No prices yet.|r"))
     card:SetHeight(58 + #costs * ROW_H)
     card:Show()
 end
 Crates.Draw = drawCard
 
+-- open a crate: its card, and a search for its cheapest bundle (the first if none is priced)
 function Crates.Pick(short)
     if not Crates.All()[short] then return end
     db.crateSel = short
+    local _, best = Crates.Costs(short)
     local first = Crates.All()[short][1]
-    if first then Crates.Search(first[2]) end
+    local item = (best and best.name) or (first and first[2])
+    if item then Crates.Search(item) end
     if ui.dropdown then ui.dropdown.Refresh() end
     drawCard()
 end
 
+---------------------------------------------------------------------------
+-- The category in the auction house's Buy list
+---------------------------------------------------------------------------
+local function newCategory(name)
+    local mixin = rawget(_G, "AuctionCategoryMixin")
+    local c = (mixin and CreateFromMixins and CreateFromMixins(mixin)) or {}
+    c.name, c.filters, c.ruinCrates = name, {}, true
+    c.HasFlag = c.HasFlag or function(self, flag) return self.flags and self.flags[flag] end
+    c.SetFlag = c.SetFlag or function(self, flag) self.flags = self.flags or {}; self.flags[flag] = true end
+    return c
+end
+
+-- (re)fill the category: a crate per sub-category, its bundles under it
+function fillCategory()
+    local top = ui.category
+    if not top then return end
+    top.subCategories = {}
+    for _, short in ipairs(Crates.Names()) do
+        local sub = newCategory(short)
+        sub.ruinCrate = short
+        sub.subCategories = {}
+        for _, e in ipairs(Crates.All()[short]) do
+            local leaf = newCategory(("%d %s"):format(e[1], e[2]))
+            leaf.ruinCrate, leaf.ruinItem = short, e[2]
+            sub.subCategories[#sub.subCategories + 1] = leaf
+        end
+        top.subCategories[#top.subCategories + 1] = sub
+    end
+end
+
+local function categoryIndex()
+    local cats = rawget(_G, "AuctionCategories")
+    if type(cats) ~= "table" then return nil end
+    for i, c in ipairs(cats) do if c == ui.category then return i end end
+end
+
+local function selection(list)
+    if type(list) ~= "table" then return nil end
+    if type(list.GetSelectedCategory) == "function" then
+        local ok, a, b, c = pcall(list.GetSelectedCategory, list)
+        if ok and a then return a, b, c end
+    end
+    return list.selectedCategoryIndex, list.selectedSubCategoryIndex, list.selectedSubSubCategoryIndex
+end
+
+-- after any click in the category list: act on ours, tidy up after leaving it
+local function onCategoryClick()
+    local f = rawget(_G, "AuctionHouseFrame")
+    local list = f and f.CategoriesList
+    local a, b, c = selection(list)
+    local mine = a and a == categoryIndex()
+    if mine then
+        local sub = b and ui.category.subCategories[b]
+        local leaf = sub and c and sub.subCategories[c]
+        if leaf then
+            db.crateSel = leaf.ruinCrate
+            C_Timer.After(0, function() Crates.Search(leaf.ruinItem); drawCard() end)
+        elseif sub then
+            C_Timer.After(0, function() Crates.Pick(sub.ruinCrate) end)
+        end
+    else
+        if ui.card then ui.card:Hide() end
+        db.crateSel = nil
+        -- our quoted name left in the search box would narrow the game's own category search
+        local sb = type(f) == "table" and f.SearchBar
+        local box = type(sb) == "table" and sb.SearchBox
+        if Crates.lastSearch and type(box) == "table" and box.GetText and box:GetText() == ('"' .. Crates.lastSearch .. '"') then
+            box:SetText("")
+            Crates.lastSearch = nil
+            if sb.StartSearch then C_Timer.After(0, function() pcall(sb.StartSearch, sb) end) end
+        end
+    end
+end
+Crates.OnCategoryClick = onCategoryClick
+
+-- adds the category after Miscellaneous (or last); false when the game's list isn't there
+function Crates.AddCategory()
+    if ui.category then return true end
+    local cats = rawget(_G, "AuctionCategories")
+    local f = rawget(_G, "AuctionHouseFrame")
+    local list = f and f.CategoriesList
+    if type(cats) ~= "table" or #cats == 0 or type(list) ~= "table" then return false end
+    local hooked = false
+    for _, fn in ipairs({ "OnFilterClicked", "SetSelectedCategory" }) do
+        if type(list[fn]) == "function" and hooksecurefunc then
+            hooked = pcall(hooksecurefunc, list, fn, function() C_Timer.After(0, onCategoryClick) end) or hooked
+            if hooked then break end
+        end
+    end
+    if not hooked and type(rawget(_G, "AuctionFrameFilter_OnClick")) == "function" and hooksecurefunc then
+        hooked = pcall(hooksecurefunc, "AuctionFrameFilter_OnClick", function() C_Timer.After(0, onCategoryClick) end)
+    end
+    if not hooked then return false end
+    ui.category = newCategory("Waylaid Crates")
+    fillCategory()
+    local at = #cats + 1
+    for i, c in ipairs(cats) do
+        if c.name == "Miscellaneous" or c.name == rawget(_G, "AUCTION_CATEGORY_MISCELLANEOUS") then at = i + 1 end
+    end
+    table.insert(cats, at, ui.category)
+    Crates.RefreshList()
+    return true
+end
+
+function Crates.RefreshList()
+    local f = rawget(_G, "AuctionHouseFrame")
+    local list = f and f.CategoriesList
+    if type(list) ~= "table" then return end
+    for _, fn in ipairs({ "UpdateCategories", "Refresh" }) do
+        if type(list[fn]) == "function" then pcall(list[fn], list); return end
+    end
+end
+
+---------------------------------------------------------------------------
+-- Building it, the fallback dropdown, and what's shown where
+---------------------------------------------------------------------------
 -- shown on the Buy page only
 function Crates.Update()
-    if not ui.dropdown then return end
     local buy = onBuyPage()
-    if buy then ui.dropdown:Show() else ui.dropdown:Hide() end
+    if ui.dropdown then
+        if buy then ui.dropdown:Show() else ui.dropdown:Hide() end
+    end
     if buy and db.crateSel then drawCard() elseif ui.card then ui.card:Hide() end
 end
 
 function Crates.Build()
     local f = rawget(_G, "AuctionHouseFrame")
-    if not f or ui.dropdown then return ui.dropdown ~= nil end
+    if not f then return false end
+    if not ui.card then
+        local card = W.Card(f)
+        card:SetSize(CARD_W, 120)
+        card:SetPoint("TOPLEFT", f, "TOPRIGHT", 4, 0)
+        card.title = W.Label(card, "", "GameFontNormal")
+        card.title:SetPoint("TOPLEFT", 12, -10)
+        card.total = W.Label(card, "", "GameFontHighlightSmall")
+        card:Hide()
+        ui.card, ui.rows = card, {}
+        if hooksecurefunc and f.SetDisplayMode then pcall(hooksecurefunc, f, "SetDisplayMode", Crates.Update) end
+        if f.HookScript then f:HookScript("OnHide", function() if ui.card then ui.card:Hide() end end) end
+    end
+    if ui.category or ui.dropdown then return true end
+    if Crates.AddCategory() then return true end
     local dd = W.Dropdown(f, 210, Crates.Names, function() return db.crateSel end, Crates.Pick)
     dd.Refresh = function()
         local v = db.crateSel
@@ -178,17 +318,7 @@ function Crates.Build()
     dd:SetPoint("TOPRIGHT", f, "BOTTOMRIGHT", 0, -2)
     W.MarkChoice(dd, "Pick a Waylaid Crate to find what fills it.")
     ui.dropdown = dd
-    local card = W.Card(f)
-    card:SetSize(CARD_W, 120)
-    card:SetPoint("TOPLEFT", f, "TOPRIGHT", 4, 0)
-    card.title = W.Label(card, "", "GameFontNormal")
-    card.title:SetPoint("TOPLEFT", 12, -10)
-    card.total = W.Label(card, "", "GameFontHighlightSmall")
-    card:Hide()
-    ui.card, ui.rows = card, {}
     dd.Refresh()
-    if hooksecurefunc and f.SetDisplayMode then pcall(hooksecurefunc, f, "SetDisplayMode", Crates.Update) end
-    if f.HookScript then f:HookScript("OnHide", function() if ui.card then ui.card:Hide() end end) end
     return true
 end
 
