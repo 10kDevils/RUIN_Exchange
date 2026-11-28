@@ -507,12 +507,12 @@ function Crates.Fillable()
     if not numSlots then return out end
     for bag = 0, 5 do   -- 5: the reagent bag
         for slot = 1, numSlots(bag) or 0 do
-            local id, link = slotItem(bag, slot)
+            local id, link, count = slotItem(bag, slot)
             local name = id and GetItemInfo and GetItemInfo(id) or (link and link:match("%[(.-)%]"))
             local short = type(name) == "string" and name:match("^Waylaid Crate:%s*(.-)%s*$")
             if short then
                 if not Crates.All()[short] then learnFromBag(bag, slot) end
-                local e = { bag = bag, slot = slot, short = short }
+                local e = { bag = bag, slot = slot, short = short, count = count or 1, id = id }
                 all[#all + 1] = e
                 if Crates.FillChoice(short) then out[#out + 1] = e end
             end
@@ -524,6 +524,34 @@ end
 local fillButtons = {}
 
 local function fillText(n) return n > 0 and ("Fill crates (%d)"):format(n) or "Nothing to fill" end
+local ARROW = "Interface\\AddOns\\RUIN_Exchange\\Media\\CrateFillArrow"
+Crates.ARROW = ARROW
+local CRATE_ICON = "Interface\\Icons\\INV_Crate_02"
+
+-- how many crates you can fill with what you carry: every crate in a stack,
+-- each taking the cheapest bundle still left after the ones before it
+function Crates.FillCount()
+    local _, all = Crates.Fillable()
+    local left, n = {}, 0
+    for _, e in ipairs(all) do
+        local list = Crates.All()[e.short] or {}
+        for _ = 1, e.count or 1 do
+            local pick, pickCost
+            for _, b in ipairs(list) do
+                if left[b[2]] == nil then left[b[2]] = have(b[2]) end
+                if left[b[2]] >= b[1] then
+                    local unit = unitPrice(b[2])
+                    local cost = unit and unit * b[1] or math.huge
+                    if not pick or cost < pickCost then pick, pickCost = b, cost end
+                end
+            end
+            if not pick then break end
+            left[pick[2]] = left[pick[2]] - pick[1]
+            n = n + 1
+        end
+    end
+    return n, all
+end
 
 local bagHooks = {}
 
@@ -629,10 +657,14 @@ function Crates.Report()
 end
 
 function Crates.RefreshFill()
-    local n = #Crates.Fillable()
+    local n, all = Crates.FillCount()
+    local icon = all[1] and all[1].id and GetItemIcon and GetItemIcon(all[1].id)
     for _, b in ipairs(fillButtons) do
-        if b.SetText then b:SetText(fillText(n)) end
-        if b.SetEnabled then b:SetEnabled(n > 0) end
+        b.fillCount = n
+        b.count:SetText(n > 0 and tostring(n) or "")
+        if icon then b.icon:SetTexture(icon) end
+        if b.icon.SetDesaturated then b.icon:SetDesaturated(n == 0) end
+        b.arrow:SetAlpha(n > 0 and 1 or 0.35)
     end
     Crates.PlaceBagButton(n)
     return n
@@ -640,7 +672,7 @@ end
 
 function Crates.HookBags()
     if not ui.bagButton then
-        ui.bagButton = Crates.FillButton(UIParent, 130)
+        ui.bagButton = Crates.FillButton(UIParent, 37)
         if ui.bagButton.SetFrameStrata then ui.bagButton:SetFrameStrata("HIGH") end
         ui.bagButton:Hide()
     end
@@ -718,22 +750,45 @@ local function makeSecure(parent, name)
 end
 
 -- a Fill crates button: RUIN's look with the game's secure button laid over it
-function Crates.FillButton(parent, width)
-    local b = W.Button(parent, fillText(0), width or 130)
+-- the Fill crates button: the crate's icon with a green arrow going in, and
+-- how many you can fill in its corner; the game's secure button laid over it
+function Crates.FillButton(parent, size)
+    size = size or 37
+    local b = CreateFrame("Button", nil, parent)
+    b:SetSize(size, size)
+    b.back = b:CreateTexture(nil, "BACKGROUND")
+    b.back:SetPoint("TOPLEFT", -2, 2)
+    b.back:SetPoint("BOTTOMRIGHT", 2, -2)
+    b.back:SetColorTexture(0, 0, 0, 0.85)
+    b.icon = b:CreateTexture(nil, "ARTWORK")
+    b.icon:SetAllPoints(b)
+    b.icon:SetTexture(CRATE_ICON)
+    b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    b.arrow = b:CreateTexture(nil, "OVERLAY")
+    b.arrow:SetAllPoints(b)
+    b.arrow:SetTexture(ARROW)
+    b.glow = b:CreateTexture(nil, "HIGHLIGHT")
+    b.glow:SetAllPoints(b)
+    b.glow:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+    if b.glow.SetBlendMode then b.glow:SetBlendMode("ADD") end
+    b.glow:Hide()
+    b.count = b:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
+    b.count:SetPoint("BOTTOMRIGHT", -2, 2)
+    b.count:SetJustifyH("RIGHT")
     local s = makeSecure(b)
     if s then
         s:SetAllPoints(b)
         s:SetFrameLevel((b:GetFrameLevel() or 1) + 5)
         s:SetScript("OnEnter", function()
-            if b.LockHighlight then b:LockHighlight() end
+            b.glow:Show()
             if GameTooltip then
                 W.TipOwner(s, GameTooltip)
-                GameTooltip:SetText("Fill Waylaid Crates")
-                GameTooltip:AddLine("Each click fills the next crate in your bags with the bundle worth the least on the auction house among those you carry. Also on a key: Key Bindings > RUIN Exchange.", 1, 1, 1, true)
+                GameTooltip:SetText(fillText(b.fillCount or 0))
+                GameTooltip:AddLine("Each click fills the next Waylaid Crate in your bags with the bundle worth the least on the auction house among those you carry. Also on a key: Key Bindings > RUIN Exchange.", 1, 1, 1, true)
                 GameTooltip:Show()
             end
         end)
-        s:SetScript("OnLeave", function() if b.UnlockHighlight then b:UnlockHighlight() end; if GameTooltip then GameTooltip:Hide() end end)
+        s:SetScript("OnLeave", function() b.glow:Hide(); if GameTooltip then GameTooltip:Hide() end end)
         b.secure = s
     end
     fillButtons[#fillButtons + 1] = b
