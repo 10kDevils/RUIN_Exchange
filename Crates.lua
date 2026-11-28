@@ -563,22 +563,38 @@ local BAG_FRAMES = { "ContainerFrameCombinedBags", "ContainerFrame1", "Container
 
 -- bag addons that name their windows after a skin or a view
 -- (Baganator: "Baganator_CategoryViewBackpackViewFrame" .. skin), found once by name
-local ADDON_BAGS = { "^Baganator_.*Backpack.*Frame", "^Bagnon.*Inventory", "^BetterBags.*Backpack", "^AdiBags.*Container" }
+-- (lower case) a bag addon's window: its name holds the first word and one of the others
+local ADDON_BAGS = { { "baganator", "backpack" }, { "baganator", "bagview" }, { "baganator", "singleview" },
+    { "baganator", "categoryview" }, { "bagnon", "inventory" }, { "betterbags", "backpack" }, { "adibags", "container" } }
 local found, lastLook = {}, -999
 
--- only right after you open your bags (a look through every global is too dear to do often)
-local function lookForAddonBags()
-    local now = GetTime()
-    if not Crates.bagsOpened or now - lastLook < 2 then return end
-    lastLook, Crates.bagsOpened = now, nil
-    for name, v in pairs(_G) do
-        if type(name) == "string" and type(v) == "table" and not found[name] and name:find("Bag", 1, true) then
-            for _, pat in ipairs(ADDON_BAGS) do
-                if name:find(pat) and type(v.IsVisible) == "function" then found[name] = true; break end
-            end
+local function isBagWindow(name, v)
+    if type(name) ~= "string" or type(v) ~= "table" or type(v.IsVisible) ~= "function" then return false end
+    local n = name:lower()
+    if n:find("bank", 1, true) or n:find("guild", 1, true) then return false end
+    for _, w in ipairs(ADDON_BAGS) do
+        if n:find(w[1], 1, true) and n:find(w[2], 1, true) then
+            -- the window itself, not something inside it
+            local parent = v.GetParent and v:GetParent()
+            return parent == nil or parent == UIParent
         end
     end
+    return false
 end
+
+-- right after you open your bags, or once a minute while a crate waits and no
+-- window has been found (a look through every global is too dear to do often)
+local function lookForAddonBags(force)
+    local now = GetTime()
+    local due = force or (Crates.bagsOpened and now - lastLook >= 2) or (not next(found) and now - lastLook >= 60)
+    if not due then return end
+    lastLook, Crates.bagsOpened = now, nil
+    for name, v in pairs(_G) do
+        if not found[name] and type(name) == "string" and name:find("[Bb]ag") and isBagWindow(name, v) then found[name] = true end
+    end
+end
+Crates.LookForBags = lookForAddonBags
+Crates.IsBagWindow = isBagWindow
 
 local function visible(n)
     local f = rawget(_G, n)
@@ -615,6 +631,8 @@ function Crates.PlaceBagButton(n)
         bags:HookScript("OnHide", function() C_Timer.After(0, function() Crates.PlaceBagButton() end) end)
         bags:HookScript("OnShow", function() C_Timer.After(0, Crates.RefreshFill) end)
     end
+    Crates.hasCrates = #all > 0
+    ui.lastBags = bags
     if bags and #all > 0 then
         b:ClearAllPoints()
         b:SetPoint("TOPRIGHT", bags, "TOPLEFT", -4, -6)
@@ -626,9 +644,19 @@ end
 
 -- what /exchange crates prints: where the button would go and each crate in your bags
 function Crates.Report()
-    Crates.bagsOpened = true
+    lookForAddonBags(true)
     local bags, name = openBags()
     M:Print("Bags open: " .. (name or "none Exchange knows (open your bags and try again)"))
+    if not name then
+        local seen = {}
+        for n, v in pairs(_G) do
+            if type(n) == "string" and n:lower():find("baganator", 1, true) and type(v) == "table" and type(v.IsVisible) == "function" and v:IsVisible() then
+                seen[#seen + 1] = n
+                if #seen >= 8 then break end
+            end
+        end
+        if #seen > 0 then M:Print("Open Baganator windows: " .. table.concat(seen, ", ")) end
+    end
     local _, all = Crates.Fillable()
     if #all == 0 then
         M:Print("No unfilled Waylaid Crate in your bags.")
@@ -907,6 +935,15 @@ function Crates.Init(module, savedDb)
     local key = makeSecure(UIParent, "RUIN_ExchangeCrateFill")
     if key then key:Hide(); Crates.keyButton = key end
     Crates.HookBags()
+    -- bag addons can open their windows without the game's bag keys: while a
+    -- crate is in your bags, a light look twice a second keeps the button with them
+    if C_Timer and C_Timer.NewTicker then
+        C_Timer.NewTicker(0.5, function()
+            if not (ui.bagButton and Crates.hasCrates) or (InCombatLockdown and InCombatLockdown()) then return end
+            local f = openBags()
+            if f ~= ui.lastBags then Crates.PlaceBagButton() end
+        end)
+    end
     ev:SetScript("OnEvent", onEvent)
     Crates.ui = ui
     M.Crates = Crates
