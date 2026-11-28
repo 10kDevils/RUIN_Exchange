@@ -2,7 +2,7 @@
 
 Versioning: the third number counts the meaningful changes made since the second number last went up.
 
-## Unreleased
+## 0.9.1
 
 - **Waylaid Crates in the auction house.** The Buy list has a Waylaid Crates category after Miscellaneous, with Apprentice, Journeyman, Expert and Artisan under it and each crate under the tier in its name. Click a crate and the results list every reagent that fills it, while a card beside the auction house shows what each bundle costs with a mark by the cheapest (any one bundle fills the crate); click a bundle on the card to search for just that item. Crates you hover join the list.
 - **Fill crates.** A Fill crates button (the Waylaid Crate's own icon with a green arrow going in) beside your bags (shown while they're open with a Waylaid Crate in them, beside the game's bag windows or a bag addon's such as Baganator, and on a key in Key Bindings > RUIN Exchange) fills the Waylaid Crates in your bags (the reagent bag too, for crates and reagents alike) one click at a time, saying in chat which bundle each gets. Each click uses the crate and picks the reagent for it in the same press: your biggest stack of the bundle worth the least on the auction house among those you carry enough of. Its corner shows how many crates you can fill: every crate in a stack, as far as your reagents go. `/exchange crates` lists each crate in your bags and what it would be filled with.
