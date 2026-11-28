@@ -528,6 +528,22 @@ local ARROW = "Interface\\AddOns\\RUIN_Exchange\\Media\\CrateFillArrow"
 Crates.ARROW = ARROW
 local CRATE_ICON = "Interface\\Icons\\INV_Crate_02"
 
+-- the Waylaid Crate's own icon: read from a crate in your bags and kept, so
+-- the button shows it even before the next crate drops
+local function iconOf(id)
+    if not id then return nil end
+    local CI = rawget(_G, "C_Item")
+    local icon = (CI and CI.GetItemIconByID and CI.GetItemIconByID(id)) or (GetItemIcon and GetItemIcon(id))
+    if not icon and GetItemInfoInstant then icon = select(5, GetItemInfoInstant(id)) end
+    if not icon and GetItemInfo then icon = select(10, GetItemInfo(id)) end
+    return icon
+end
+function Crates.Icon(id)
+    local icon = iconOf(id)
+    if icon then db.crateIcon = icon end
+    return db.crateIcon or CRATE_ICON
+end
+
 -- how many crates you can fill with what you carry: every crate in a stack,
 -- each taking the cheapest bundle still left after the ones before it
 function Crates.FillCount()
@@ -686,7 +702,7 @@ end
 
 function Crates.RefreshFill()
     local n, all = Crates.FillCount()
-    local icon = all[1] and all[1].id and GetItemIcon and GetItemIcon(all[1].id)
+    local icon = Crates.Icon(all[1] and all[1].id)
     for _, b in ipairs(fillButtons) do
         b.fillCount = n
         b.count:SetText(n > 0 and tostring(n) or "")
@@ -790,7 +806,7 @@ function Crates.FillButton(parent, size)
     b.back:SetColorTexture(0, 0, 0, 0.85)
     b.icon = b:CreateTexture(nil, "ARTWORK")
     b.icon:SetAllPoints(b)
-    b.icon:SetTexture(CRATE_ICON)
+    b.icon:SetTexture((db and db.crateIcon) or CRATE_ICON)
     b.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
     b.arrow = b:CreateTexture(nil, "OVERLAY")
     b.arrow:SetAllPoints(b)
